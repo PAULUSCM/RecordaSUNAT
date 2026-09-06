@@ -8,6 +8,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.time.LocalDate
+import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 
 class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
@@ -16,6 +17,14 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         val context = applicationContext
         val hoy = LocalDate.now()
         val prefs = context.getSharedPreferences("estado", Context.MODE_PRIVATE)
+        val ajustes = Config.cargar(context)
+        val ahora = LocalTime.now()
+        val enVentana = if (ajustes.inicio <= ajustes.fin)
+            ahora >= ajustes.inicio && ahora <= ajustes.fin
+        else
+            ahora >= ajustes.inicio || ahora <= ajustes.fin   // ventana que cruza medianoche
+        val ahoraMs = System.currentTimeMillis()
+        val intervaloMs = ajustes.intervaloMin * 60_000L
 
         Store.cargar(context).forEach { o ->
             if (!Planner.tocaAvisar(o, hoy)) {
@@ -23,27 +32,36 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 return@forEach
             }
             val detalle = if (o.detalle.isBlank()) "" else "\n${o.detalle}"
+            val esGeneral = o.tipo == "GENERAL"
+            val accion = if (esGeneral) "YA LO HICE ✓" else "YA DECLARÉ ✓"
 
             val (titulo, texto) = when (val est = Planner.estadoDe(o, hoy)) {
                 is Planner.Estado.Vencido ->
-                    "🔴 ${o.nombre}: ¡VENCIDO hace ${est.diasAtraso} día(s)!" to
-                    "Venció el ${Planner.fmt(est.vencimiento)}. Declara YA y toca «YA DECLARÉ».$detalle"
+                    if (esGeneral)
+                        "🔴 ${o.nombre}: ¡la fecha ya pasó!" to
+                        "Era el ${Planner.fmt(est.vencimiento)}. Toca «YA LO HICE» cuando lo atiendas.$detalle"
+                    else
+                        "🔴 ${o.nombre}: ¡VENCIDO hace ${est.diasAtraso} día(s)!" to
+                        "Venció el ${Planner.fmt(est.vencimiento)}. Declara YA.$detalle"
                 Planner.Estado.VenceHoy ->
-                    "🔴 ${o.nombre}: ¡VENCE HOY!" to
-                    "Hoy es el último día para declarar.$detalle"
+                    if (esGeneral) "🔴 ${o.nombre}: ¡ES HOY!" to "Hoy es el día.$detalle"
+                    else "🔴 ${o.nombre}: ¡VENCE HOY!" to "Hoy es el último día para declarar.$detalle"
                 is Planner.Estado.PorVencer ->
-                    "⏰ ${o.nombre}: vence en ${est.faltan} día(s)" to
-                    "Vencimiento: ${Planner.fmt(est.vencimiento)}.$detalle"
-                else -> o.nombre to "Vencimiento pendiente.$detalle"
+                    "⏰ ${o.nombre}: ${if (esGeneral) "falta(n)" else "vence en"} ${est.faltan} día(s)" to
+                    "Fecha: ${Planner.fmt(est.vencimiento)}.$detalle"
+                else -> o.nombre to "Pendiente.$detalle"
             }
 
-            Notifier.fija(context, o.id, titulo, texto)
+            // Notificación fija (silenciosa, permanente)
+            Notifier.fija(context, o.id, titulo, texto, accion)
 
-            // Sonido de alerta: solo 1 vez por día
-            val clave = "alerta_${o.id}"
-            if (prefs.getString(clave, null) != hoy.toString()) {
-                Notifier.alertaDiaria(context, o.id, titulo, texto)
-                prefs.edit().putString(clave, hoy.toString()).apply()
+            // Alerta sonora: dentro del horario y respetando el intervalo
+            if (enVentana) {
+                val clave = "ultimaAlerta_${o.id}"
+                if (ahoraMs - prefs.getLong(clave, 0L) >= intervaloMs) {
+                    Notifier.alertaSonora(context, o.id, titulo, texto, accion)
+                    prefs.edit().putLong(clave, ahoraMs).apply()
+                }
             }
         }
         return Result.success()

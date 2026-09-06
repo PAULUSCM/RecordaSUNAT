@@ -12,18 +12,18 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
 object Notifier {
-    const val CANAL_ALERTA = "alerta_diaria"
+    const val CANAL_ALERTA = "alerta_sonora"
     const val CANAL_FIJO = "recordatorio_permanente"
 
     fun crearCanales(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CANAL_ALERTA, "Avisos con sonido", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Aviso diario cuando se acerca un vencimiento"
+            NotificationChannel(CANAL_ALERTA, "Alertas con sonido", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Suena según el horario configurado mientras haya pendientes"
             })
         nm.createNotificationChannel(
             NotificationChannel(CANAL_FIJO, "Recordatorio permanente", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Aviso fijo hasta que marques la declaración como hecha"
+                description = "Aviso fijo en la barra hasta que marques como hecho"
             })
     }
 
@@ -35,7 +35,7 @@ object Notifier {
     fun idFijo(id: Long) = ((id % 500_000) * 2).toInt()
     fun idAlerta(id: Long) = ((id % 500_000) * 2 + 1).toInt()
 
-    private fun base(context: Context, canal: String, idObligacion: Long): NotificationCompat.Builder {
+    private fun base(context: Context, canal: String, idObligacion: Long, accion: String): NotificationCompat.Builder {
         val abrirApp = PendingIntent.getActivity(
             context, (idObligacion % 500_000).toInt() + 1,
             Intent(context, MainActivity::class.java),
@@ -47,33 +47,34 @@ object Notifier {
         return NotificationCompat.Builder(context, canal)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentIntent(abrirApp)
-            .addAction(0, "YA DECLARÉ ✓", declarar)
+            .addAction(0, accion, declarar)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
     }
 
-    /** Aviso con sonido: 1 vez por día mientras esté pendiente */
-    fun alertaDiaria(context: Context, idObligacion: Long, titulo: String, texto: String) {
+    fun alertaSonora(context: Context, idObligacion: Long, titulo: String, texto: String,
+                     accion: String = "YA DECLARÉ ✓") {
         if (!permisoConcedido(context)) return
         NotificationManagerCompat.from(context).notify(
             idAlerta(idObligacion),
-            base(context, CANAL_ALERTA, idObligacion)
+            base(context, CANAL_ALERTA, idObligacion, accion)
                 .setContentTitle(titulo).setContentText(texto)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setAutoCancel(true)
                 .build())
     }
 
-    /** Notificación FIJA en la barra hasta marcar "YA DECLARÉ" */
-    fun fija(context: Context, idObligacion: Long, titulo: String, texto: String) {
+    fun fija(context: Context, idObligacion: Long, titulo: String, texto: String,
+             accion: String = "YA DECLARÉ ✓") {
         if (!permisoConcedido(context)) return
         NotificationManagerCompat.from(context).notify(
             idFijo(idObligacion),
-            base(context, CANAL_FIJO, idObligacion)
+            base(context, CANAL_FIJO, idObligacion, accion)
                 .setContentTitle(titulo).setContentText(texto)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
-                .setOngoing(true)        // no se puede deslizar para quitar
-                .setOnlyAlertOnce(true)  // no suena en cada actualización
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
                 .build())
     }
 
