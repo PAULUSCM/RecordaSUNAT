@@ -7,19 +7,32 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 
 object Notifier {
-    const val CANAL_ALERTA = "alerta_sonora"
+    const val CANAL_ALERTA = "alerta_sonora_v2"
     const val CANAL_FIJO = "recordatorio_permanente"
 
     fun crearCanales(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
+
+        val alarmaUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)   // volumen de ALARMA (más fuerte)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
         nm.createNotificationChannel(
             NotificationChannel(CANAL_ALERTA, "Alertas con sonido", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Suena según el horario configurado mientras haya pendientes"
+                description = "Suena con tono de alarma según el horario configurado"
+                setSound(alarmaUri, attrs)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 600, 250, 600, 250, 1200)
             })
         nm.createNotificationChannel(
             NotificationChannel(CANAL_FIJO, "Recordatorio permanente", NotificationManager.IMPORTANCE_LOW).apply {
@@ -48,7 +61,7 @@ object Notifier {
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentIntent(abrirApp)
             .addAction(0, accion, declarar)
-            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
     }
 
     fun alertaSonora(context: Context, idObligacion: Long, titulo: String, texto: String,
@@ -59,8 +72,7 @@ object Notifier {
             base(context, CANAL_ALERTA, idObligacion, accion)
                 .setContentTitle(titulo).setContentText(texto)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setAutoCancel(true)
                 .build())
     }
