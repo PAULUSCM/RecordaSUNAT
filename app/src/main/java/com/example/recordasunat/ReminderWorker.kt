@@ -25,8 +25,8 @@ class ReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
             Notifier.fija(context, o.id, titulo, texto, Mensajes.accion(o))
         }
 
-        // Respaldo: garantiza que la alarma exacta siempre esté programada
-        AlertScheduler.programarSiguiente(context)
+        // Garantiza que ambas cadenas de alarma (SUNAT y GENERAL) estén programadas
+        AlertScheduler.programarTodo(context)
         return Result.success()
     }
 

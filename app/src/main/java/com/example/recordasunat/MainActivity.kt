@@ -1,10 +1,8 @@
 package com.example.recordasunat
 
 import android.Manifest
-import android.app.AlarmManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -12,6 +10,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,8 +20,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +33,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -58,7 +57,7 @@ class MainActivity : ComponentActivity() {
 
         ReminderWorker.programar(this)
         ReminderWorker.ejecutarAhora(this)
-        AlertScheduler.programarSiguiente(this)
+        AlertScheduler.programarTodo(this)
         setContent { MaterialTheme(colorScheme = darkColorScheme()) { Raiz() } }
     }
 }
@@ -77,6 +76,23 @@ fun Raiz() {
     }
 }
 
+/** Estado y texto resumen del recordatorio (lo usan la lista y el detalle) */
+private fun estadoTexto(o: Obligacion, hoy: LocalDate): Pair<Color, String> {
+    val esGeneral = o.tipo == "GENERAL"
+    return when (val est = Planner.estadoDe(o, hoy)) {
+        is Planner.Estado.Atendido -> Color(0xFF2E7D32) to
+            if (esGeneral) "✅ Atendido (ocurrencia ${est.etiqueta})"
+            else "✅ Declarado (periodo ${est.etiqueta})"
+        is Planner.Estado.Vencido -> Color(0xFFC62828) to
+            if (esGeneral) "🔴 ¡La fecha ya pasó! Era el ${Planner.fmt(est.vencimiento)} (hace ${est.diasAtraso} día(s))"
+            else "🔴 ¡VENCIDO hace ${est.diasAtraso} día(s)! Venció el ${Planner.fmt(est.vencimiento)}"
+        Planner.Estado.VenceHoy -> Color(0xFFC62828) to "🔴 ¡VENCE HOY!"
+        is Planner.Estado.PorVencer -> Color(0xFFEF6C00) to
+            "⏰ ${if (esGeneral) "Falta(n)" else "Vence en"} ${est.faltan} día(s) (${Planner.fmt(est.vencimiento)})"
+        Planner.Estado.NoAplica -> Color(0xFF9E9E9E) to "Sin vencimiento este mes"
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PantallaPrincipal() {
@@ -85,8 +101,9 @@ fun PantallaPrincipal() {
     var lista by remember { mutableStateOf(Store.cargar(context)) }
     var tab by remember { mutableStateOf(0) }
     var nuevoTipo by remember { mutableStateOf<String?>(null) }
-    var editando by remember { mutableStateOf<Obligacion?>(null) }
-    var eliminando by remember { mutableStateOf<Obligacion?>(null) }
+    var detalleId by remember { mutableStateOf<Long?>(null) }
+    var editandoId by remember { mutableStateOf<Long?>(null) }
+    var eliminandoId by remember { mutableStateOf<Long?>(null) }
     var configurando by remember { mutableStateOf(false) }
     val hoy = LocalDate.now()
 
@@ -103,7 +120,7 @@ fun PantallaPrincipal() {
         lista = l
         Store.guardar(context, l)
         ReminderWorker.ejecutarAhora(context)
-        AlertScheduler.programarSiguiente(context)
+        AlertScheduler.programarTodo(context)
     }
 
     Scaffold(
@@ -133,19 +150,47 @@ fun PantallaPrincipal() {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (tab) {
-                0 -> ListaProgramadas(
-                    lista = lista, hoy = hoy,
-                    onAtender = { o -> guardar(lista.map {
-                        if (it.id == o.id) it.copy(periodoDeclarado = Planner.etiquetaVigente(it, hoy)) else it }) },
-                    onDeshacer = { o -> guardar(lista.map {
-                        if (it.id == o.id) it.copy(periodoDeclarado = null) else it }) },
-                    onEditar = { editando = it },
-                    onEliminar = { eliminando = it })
+                0 -> ListaProgramadas(lista = lista, hoy = hoy, onAbrir = { detalleId = it })
                 else -> VistaAgregar(
                     onSunat = { nuevoTipo = "SUNAT" },
                     onGeneral = { nuevoTipo = "GENERAL" })
             }
         }
+    }
+
+    // Detalle: se resuelve SIEMPRE contra la lista fresca (se actualiza en vivo)
+    detalleId?.let { id -> lista.find { it.id == id } }?.let { o ->
+        DialogoDetalle(
+            o = o, hoy = hoy,
+            onDeclarar = { guardar(lista.map {
+                if (it.id == o.id) it.copy(periodoDeclarado = Planner.etiquetaVigente(it, hoy)) else it }) },
+            onDeshacer = { guardar(lista.map {
+                if (it.id == o.id) it.copy(periodoDeclarado = null) else it }) },
+            onEditar = { detalleId = null; editandoId = o.id },
+            onEliminar = { detalleId = null; eliminandoId = o.id },
+            onCerrar = { detalleId = null })
+    }
+
+    editandoId?.let { id -> lista.find { it.id == id } }?.let { actual ->
+        DialogoEditor(tipo = actual.tipo, inicial = actual,
+            onGuardar = { nueva -> guardar(lista.map {
+                if (it.id == actual.id) nueva.copy(id = actual.id) else it }); editandoId = null },
+            onCancelar = { editandoId = null })
+    }
+
+    eliminandoId?.let { id -> lista.find { it.id == id } }?.let { victima ->
+        AlertDialog(
+            onDismissRequest = { eliminandoId = null },
+            title = { Text("¿Eliminar recordatorio?") },
+            text = { Text("Se eliminará \"${victima.nombre}\" y todos sus avisos. Esta acción no se puede deshacer.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    Notifier.cancelar(context, victima.id)
+                    guardar(lista.filter { it.id != victima.id })
+                    eliminandoId = null
+                }) { Text("Eliminar", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { eliminandoId = null }) { Text("Cancelar") } })
     }
 
     nuevoTipo?.let { t ->
@@ -154,35 +199,11 @@ fun PantallaPrincipal() {
             onCancelar = { nuevoTipo = null })
     }
 
-    editando?.let { actual ->
-        DialogoEditor(tipo = actual.tipo, inicial = actual,
-            onGuardar = { nueva -> guardar(lista.map {
-                if (it.id == actual.id) nueva.copy(id = actual.id) else it }); editando = null },
-            onCancelar = { editando = null })
-    }
-
-    eliminando?.let { victima ->
-        AlertDialog(
-            onDismissRequest = { eliminando = null },
-            title = { Text("¿Eliminar recordatorio?") },
-            text = { Text("Se eliminará \"${victima.nombre}\" y todos sus avisos. Esta acción no se puede deshacer.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    Notifier.cancelar(context, victima.id)
-                    guardar(lista.filter { it.id != victima.id })
-                    eliminando = null
-                }) { Text("Eliminar", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { eliminando = null }) { Text("Cancelar") } })
-    }
-
     if (configurando) DialogoConfig(onCerrar = { configurando = false })
 }
 
 @Composable
-fun ListaProgramadas(lista: List<Obligacion>, hoy: LocalDate,
-                     onAtender: (Obligacion) -> Unit, onDeshacer: (Obligacion) -> Unit,
-                     onEditar: (Obligacion) -> Unit, onEliminar: (Obligacion) -> Unit) {
+fun ListaProgramadas(lista: List<Obligacion>, hoy: LocalDate, onAbrir: (Long) -> Unit) {
     if (lista.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text("No hay recordatorios.\nVe a la pestaña ➕ Agregar.",
@@ -194,16 +215,12 @@ fun ListaProgramadas(lista: List<Obligacion>, hoy: LocalDate,
     val general = lista.filter { it.tipo != "SUNAT" }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
         if (sunat.isNotEmpty()) {
-            item { Cintillo("📅 MENSUAL SUNAT", sunat.size) }
-            items(sunat, key = { it.id }) { o ->
-                TarjetaObligacion(o, hoy, onAtender, onDeshacer, onEditar, onEliminar)
-            }
+            item { Cintillo("📅 SUNAT", sunat.size) }
+            items(sunat, key = { it.id }) { o -> ItemCompacto(o, hoy) { onAbrir(o.id) } }
         }
         if (general.isNotEmpty()) {
             item { Cintillo("⭐ GENERAL", general.size) }
-            items(general, key = { it.id }) { o ->
-                TarjetaObligacion(o, hoy, onAtender, onDeshacer, onEditar, onEliminar)
-            }
+            items(general, key = { it.id }) { o -> ItemCompacto(o, hoy) { onAbrir(o.id) } }
         }
         item { Spacer(Modifier.height(80.dp)) }
     }
@@ -214,7 +231,7 @@ fun Cintillo(texto: String, total: Int) {
     Surface(
         color = Color(0xFF2B2312),
         shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp)
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp)
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -224,6 +241,69 @@ fun Cintillo(texto: String, total: Int) {
                 style = MaterialTheme.typography.labelSmall)
         }
     }
+}
+
+@Composable
+fun ItemCompacto(o: Obligacion, hoy: LocalDate, onClick: () -> Unit) {
+    val (color, _) = estadoTexto(o, hoy)
+    Surface(
+        color = Color(0xFF1F1F1F),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clickable { onClick() }
+    ) {
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(o.nombre, color = color, style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Abrir",
+                tint = Color(0xFF9E9E9E))
+        }
+    }
+}
+
+@Composable
+fun DialogoDetalle(o: Obligacion, hoy: LocalDate,
+                   onDeclarar: () -> Unit, onDeshacer: () -> Unit,
+                   onEditar: () -> Unit, onEliminar: () -> Unit, onCerrar: () -> Unit) {
+    val esGeneral = o.tipo == "GENERAL"
+    val (color, textoEstado) = estadoTexto(o, hoy)
+    val venc = Planner.vencimientoVigente(o, hoy)
+    val atendido = Planner.estadoDe(o, hoy) is Planner.Estado.Atendido
+
+    AlertDialog(
+        onDismissRequest = onCerrar,
+        title = { Text(o.nombre) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(if (esGeneral) "⭐ GENERAL" else "📅 MENSUAL SUNAT",
+                    color = DORADO, style = MaterialTheme.typography.labelSmall)
+                if (o.detalle.isNotBlank())
+                    Text(o.detalle, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text(textoEstado, color = color, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                if (venc != null)
+                    Text("Fecha de vencimiento vigente: ${Planner.fmt(venc)}",
+                        style = MaterialTheme.typography.bodySmall)
+                Text("Avisa ${o.diasAviso} día(s) antes",
+                    style = MaterialTheme.typography.bodySmall)
+                if (esGeneral && o.repetirAnual)
+                    Text("Se repite todos los años", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(12.dp))
+                if (atendido) {
+                    TextButton(onClick = onDeshacer, modifier = Modifier.fillMaxWidth()) {
+                        Text("Deshacer") }
+                } else if (venc != null) {
+                    Button(onClick = onDeclarar, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (esGeneral) "Ya lo hice" else "Ya declaré este mes") }
+                }
+                TextButton(onClick = onEditar, modifier = Modifier.fillMaxWidth()) {
+                    Text("✏️ Editar") }
+                TextButton(onClick = onEliminar, modifier = Modifier.fillMaxWidth()) {
+                    Text("🗑️ Eliminar", color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onCerrar) { Text("Cerrar") } })
 }
 
 @Composable
@@ -242,49 +322,6 @@ fun VistaAgregar(onSunat: () -> Unit, onGeneral: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text("Cumpleaños, reuniones, pagos puntuales... por fecha, con repetición anual opcional. Mismo sistema de alertas.",
             style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-    }
-}
-
-@Composable
-fun TarjetaObligacion(o: Obligacion, hoy: LocalDate,
-                      onAtender: (Obligacion) -> Unit, onDeshacer: (Obligacion) -> Unit,
-                      onEditar: (Obligacion) -> Unit, onEliminar: (Obligacion) -> Unit) {
-    val est = Planner.estadoDe(o, hoy)
-    val esGeneral = o.tipo == "GENERAL"
-    val (color, textoEstado) = when (est) {
-        is Planner.Estado.Atendido -> Color(0xFF2E7D32) to
-            if (esGeneral) "✅ Atendido (ocurrencia ${est.etiqueta})"
-            else "✅ Declarado (periodo ${est.etiqueta})"
-        is Planner.Estado.Vencido -> Color(0xFFC62828) to
-            if (esGeneral) "🔴 ¡La fecha ya pasó! Era el ${Planner.fmt(est.vencimiento)} (hace ${est.diasAtraso} día(s))"
-            else "🔴 ¡VENCIDO hace ${est.diasAtraso} día(s)! Venció el ${Planner.fmt(est.vencimiento)}"
-        Planner.Estado.VenceHoy -> Color(0xFFC62828) to "🔴 ¡VENCE HOY!"
-        is Planner.Estado.PorVencer -> Color(0xFFEF6C00) to
-            "⏰ ${if (esGeneral) "Falta(n)" else "Vence en"} ${est.faltan} día(s) (${Planner.fmt(est.vencimiento)})"
-        Planner.Estado.NoAplica -> Color(0xFF9E9E9E) to "Sin vencimiento este mes"
-    }
-
-    Card(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(o.nombre, style = MaterialTheme.typography.titleMedium)
-                    Text(if (esGeneral) "GENERAL" else "MENSUAL SUNAT",
-                        style = MaterialTheme.typography.labelSmall, color = DORADO)
-                    if (o.detalle.isNotBlank()) Text(o.detalle, style = MaterialTheme.typography.bodySmall)
-                }
-                IconButton(onClick = { onEditar(o) }) { Icon(Icons.Default.Edit, contentDescription = "Editar") }
-                IconButton(onClick = { onEliminar(o) }) { Icon(Icons.Default.Delete, contentDescription = "Eliminar") }
-            }
-            Text(textoEstado, color = color, style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(6.dp))
-            when (est) {
-                is Planner.Estado.Atendido -> TextButton(onClick = { onDeshacer(o) }) { Text("Deshacer") }
-                Planner.Estado.NoAplica -> {}
-                else -> Button(onClick = { onAtender(o) }) {
-                    Text(if (esGeneral) "Ya lo hice" else "Ya declaré este mes") }
-            }
-        }
     }
 }
 
@@ -335,7 +372,9 @@ fun DialogoEditor(tipo: String, inicial: Obligacion?, onGuardar: (Obligacion) ->
                 if (error) Text("Revisa: nombre obligatorio y fechas válidas.",
                     color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(nombre, { nombre = it },
-                    label = { Text("Nombre (ej: IGV mensual, Cumpleaños de Ana)") }, modifier = Modifier.fillMaxWidth())
+                    label = { Text(if (tipo == "SUNAT") "Nombre (ej: IGV MENSUAL, RENTA, etc.)"
+                                   else "Nombre (ej: Cumpleaños, Pago de Servicios, etc.)") },
+                    modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(detalle, { detalle = it },
                     label = { Text("Detalle (opcional)") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(diasAviso, { diasAviso = it.filter { c -> c.isDigit() }.take(2) },
@@ -399,14 +438,15 @@ fun DialogoConfig(onCerrar: () -> Unit) {
     val actual = Config.cargar(context)
     var inicio by remember { mutableStateOf("%02d:%02d".format(actual.inicio.hour, actual.inicio.minute)) }
     var fin by remember { mutableStateOf("%02d:%02d".format(actual.fin.hour, actual.fin.minute)) }
-    var intervalo by remember { mutableStateOf(actual.intervaloMin.toString()) }
+    var interS by remember { mutableStateOf(actual.intervaloSunat.toString()) }
+    var interG by remember { mutableStateOf(actual.intervaloGeneral.toString()) }
 
     AlertDialog(
         onDismissRequest = onCerrar,
         title = { Text("Ajustes de alertas sonoras") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Mientras un recordatorio siga pendiente, sonará dentro de este horario, repitiéndose cada cierto tiempo.",
+                Text("Horario en el que pueden sonar las alertas (común para ambos tipos):",
                     style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -416,24 +456,22 @@ fun DialogoConfig(onCerrar: () -> Unit) {
                         singleLine = true, modifier = Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(intervalo, { intervalo = it.filter { c -> c.isDigit() }.take(4) },
-                    label = { Text("Repetir cada (minutos, mín. 15)") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth())
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(interS, { interS = it.filter { c -> c.isDigit() }.take(4) },
+                        label = { Text("Cada (min) SUNAT") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f))
+                    OutlinedTextField(interG, { interG = it.filter { c -> c.isDigit() }.take(4) },
+                        label = { Text("Cada (min) GENERAL") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f))
+                }
                 Spacer(Modifier.height(4.dp))
-                Text("El sonido usa el VOLUMEN DE ALARMA del teléfono. Súbelo con los botones laterales (Ajustes → Sonido → Alarma).",
+                Text("Mínimo 15 minutos. El sonido usa el VOLUMEN DE ALARMA del teléfono. Verás un relojito en la barra: indica alertas programadas.",
                     style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(12.dp))
                 Text("Robustez (importante en Xiaomi, Samsung, Huawei):",
                     style = MaterialTheme.typography.labelSmall, color = DORADO)
-                TextButton(onClick = {
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        val am = context.getSystemService(AlarmManager::class.java)
-                        if (!am.canScheduleExactAlarms())
-                            context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
-                                Uri.parse("package:${context.packageName}")))
-                    }
-                }) { Text("🔔 Permitir alarmas exactas") }
                 TextButton(onClick = {
                     context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 }) { Text("🔋 Quitar optimización de batería") }
@@ -441,8 +479,10 @@ fun DialogoConfig(onCerrar: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = {
-                Config.guardar(context, inicio, fin, intervalo.trim().toIntOrNull() ?: 120)
-                AlertScheduler.programarSiguiente(context)
+                Config.guardar(context, inicio, fin,
+                    interS.trim().toIntOrNull() ?: 120,
+                    interG.trim().toIntOrNull() ?: 120)
+                AlertScheduler.programarTodo(context)
                 onCerrar()
             }) { Text("Guardar") }
         },

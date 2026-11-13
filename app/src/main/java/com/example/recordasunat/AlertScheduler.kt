@@ -4,50 +4,60 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneId
 
 object AlertScheduler {
-    private const val REQUEST = 1001
 
-    fun programarSiguiente(context: Context) {
+    fun programarTodo(context: Context) {
+        programarSiguiente(context, "SUNAT")
+        programarSiguiente(context, "GENERAL")
+    }
+
+    fun programarSiguiente(context: Context, tipo: String) {
         val prefs = context.getSharedPreferences("alarma", Context.MODE_PRIVATE)
         val ajustes = Config.cargar(context)
-        val stamp = "${ajustes.inicio}|${ajustes.fin}|${ajustes.intervaloMin}"
+        val intervalo = if (tipo == "GENERAL") ajustes.intervaloGeneral else ajustes.intervaloSunat
+        val clave = tipo.lowercase()
+        val stamp = "${ajustes.inicio}|${ajustes.fin}|$intervalo"
         val ahoraMs = System.currentTimeMillis()
-        val triggerPrevio = prefs.getLong("trigger", 0L)
-        val stampPrevio = prefs.getString("stamp", null)
+        val triggerPrevio = prefs.getLong("trigger_$clave", 0L)
+        val stampPrevio = prefs.getString("stamp_$clave", null)
 
-        // Si ya hay una alarma futura válida con la misma configuración, no tocar
-        // (evita que las revisiones periódicas retrasen la alarma indefinidamente)
+        // Si ya hay una alarma futura válida con la misma config, no reprogramar
         if (stampPrevio == stamp && triggerPrevio > ahoraMs + 60_000L) return
 
-        val proximo = siguienteDisparo(ajustes, LocalDateTime.now())
+        val proximo = siguienteDisparo(ajustes.inicio, ajustes.fin, intervalo, LocalDateTime.now())
         val triggerAt = proximo.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
         val am = context.getSystemService(AlarmManager::class.java)
+        val requestCode = if (tipo == "GENERAL") 1002 else 1001
         val pi = PendingIntent.getBroadcast(
-            context, REQUEST,
-            Intent(context, AlertReceiver::class.java),
+            context, requestCode,
+            Intent(context, AlertReceiver::class.java).putExtra("tipo", tipo),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val abrir = PendingIntent.getActivity(
+            context, 1003,
+            Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val exacta = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
-        if (exacta) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
-        else am.setWindow(AlarmManager.RTC_WAKEUP, triggerAt, 10 * 60_000L, pi)
+        // setAlarmClock: exacta siempre, no se difiere en Doze y no requiere permisos extra
+        am.setAlarmClock(AlarmManager.AlarmClockInfo(triggerAt, abrir), pi)
 
-        prefs.edit().putLong("trigger", triggerAt).putString("stamp", stamp).apply()
+        prefs.edit().putLong("trigger_$clave", triggerAt).putString("stamp_$clave", stamp).apply()
     }
 
     /** Próximo momento dentro de la ventana horaria, respetando el intervalo */
-    private fun siguienteDisparo(a: Config.Ajustes, ahora: LocalDateTime): LocalDateTime {
-        val hoyIni = ahora.toLocalDate().atTime(a.inicio)
-        val cruza = a.fin <= a.inicio
+    private fun siguienteDisparo(inicio: LocalTime, fin: LocalTime, intervaloMin: Int,
+                                 ahora: LocalDateTime): LocalDateTime {
+        val hoyIni = ahora.toLocalDate().atTime(inicio)
+        val cruza = fin <= inicio
         fun enVentana(t: LocalDateTime): Boolean {
             val tt = t.toLocalTime()
-            return if (!cruza) tt >= a.inicio && tt <= a.fin else tt >= a.inicio || tt <= a.fin
+            return if (!cruza) tt >= inicio && tt <= fin else tt >= inicio || tt <= fin
         }
-        val cand = ahora.plusMinutes(a.intervaloMin.toLong())
+        val cand = ahora.plusMinutes(intervaloMin.toLong())
         if (enVentana(cand)) return cand
         return if (cand < hoyIni) hoyIni else hoyIni.plusDays(1)
     }

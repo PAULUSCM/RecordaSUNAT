@@ -8,6 +8,7 @@ import java.time.LocalTime
 
 class AlertReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val tipo = intent.getStringExtra("tipo") ?: "SUNAT"
         val ajustes = Config.cargar(context)
         val ahora = LocalTime.now()
         val enVentana = if (ajustes.inicio <= ajustes.fin)
@@ -18,13 +19,14 @@ class AlertReceiver : BroadcastReceiver() {
         if (enVentana) {
             val hoy = LocalDate.now()
             Store.cargar(context)
+                .filter { if (tipo == "GENERAL") it.tipo == "GENERAL" else it.tipo != "GENERAL" }
                 .filter { Planner.tocaAvisar(it, hoy) }
                 .forEach { o ->
                     val (titulo, texto) = Mensajes.de(o, hoy)
                     Notifier.alertaSonora(context, o.id, titulo, texto, Mensajes.accion(o))
                 }
         }
-        // Reprograma la siguiente alarma para mantener la cadena
-        AlertScheduler.programarSiguiente(context)
+        // Mantiene la cadena de alarmas de este tipo
+        AlertScheduler.programarSiguiente(context, tipo)
     }
 }
