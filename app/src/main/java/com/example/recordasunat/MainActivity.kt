@@ -136,7 +136,7 @@ class MainActivity : ComponentActivity() {
                     try {
                         Toast.makeText(
                             applicationContext,
-                            "RecordaSUNAT falló: ${error.javaClass.simpleName}: ${error.message?.take(110) ?: ""}",
+                            "INGES BUILDERS RECORDATORIOS PRO falló: ${error.javaClass.simpleName}: ${error.message?.take(110) ?: ""}",
                             Toast.LENGTH_LONG
                         ).show()
                     } catch (_: Exception) { }
@@ -314,10 +314,10 @@ fun PantallaPrincipal() {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Text(
-                "RecordaSUNAT",
+                "INGES BUILDERS RECORDATORIOS PRO",
                 color = ORO,
                 fontWeight = FontWeight.Bold,
-                fontSize = 22.sp,
+                fontSize = 17.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
             TabRow(selectedTabIndex = tab) {
@@ -780,7 +780,7 @@ fun MenuAcerca(onAbrir: (String) -> Unit) {
         }
 
         Spacer(Modifier.height(24.dp))
-        Text("RecordaSUNAT", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Text("INGES BUILDERS RECORDATORIOS PRO", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ORO)
         Text(
             "Desarrollado por INGES BUILDERS SCRL. — Cajamarca, Perú",
             fontSize = 12.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center,
@@ -873,7 +873,7 @@ fun PantallaVersion(onVolver: () -> Unit) {
                 LineaVersion("Autor", "Hugo Cerquin M")
                 LineaVersion("Empresa", "INGES BUILDERS SCRL.")
                 LineaVersion("Ciudad", "CAJAMARCA, PERU")
-                LineaVersion("App", "RecordaSUNAT")
+                LineaVersion("App", "INGES BUILDERS RECORDATORIOS PRO")
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -1253,7 +1253,7 @@ private fun generarRespaldo(lista: List<Obligacion>): String {
         arr.put(ob)
     }
     val raiz = JSONObject()
-    raiz.put("app", "RecordaSUNAT")
+    raiz.put("app", "INGES BUILDERS RECORDATORIOS PRO")
     raiz.put("tipoRespaldo", "CUMPLEANOS")
     raiz.put("fecha", LocalDate.now().toString())
     raiz.put("cantidad", cumple.size)
