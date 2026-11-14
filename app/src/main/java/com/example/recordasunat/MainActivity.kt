@@ -7,11 +7,13 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,6 +48,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -66,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -82,6 +87,8 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.temporal.ChronoUnit
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -212,6 +219,7 @@ fun PantallaPrincipal() {
     var elegirAjustes by remember { mutableStateOf(false) }
     var textoCrash by remember { mutableStateOf<String?>(null) }
     var acercaVista by remember { mutableStateOf<String?>(null) }
+    var respaldoMsg by remember { mutableStateOf<String?>(null) }
 
     fun recargar() {
         lista = try { Store.cargar(ctx) } catch (_: Exception) { listOf() }
@@ -244,6 +252,51 @@ fun PantallaPrincipal() {
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33 && !Notifier.permisoConcedido(ctx)) {
             pedirPermiso.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    // Respaldo de cumpleaños (solo GENERAL): exportar a un archivo y restaurarlo.
+    val exportarRespaldo = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            try {
+                val texto = generarRespaldo(lista)
+                ctx.contentResolver.openOutputStream(uri)?.use { out -> out.write(texto.toByteArray(Charsets.UTF_8)) }
+                    ?: throw Exception("no se pudo abrir el destino")
+                respaldoMsg = "Respaldo guardado con ${lista.count { it.tipo == "GENERAL" }} cumpleaños. Guárdalo en un lugar seguro (Drive, WhatsApp, correo)."
+            } catch (e: Exception) {
+                respaldoMsg = "No se pudo guardar el respaldo: ${e.message ?: "error desconocido"}"
+            }
+        }
+    }
+    val importarRespaldo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                val texto = ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    ?: throw Exception("no se pudo leer el archivo")
+                val leidos = parsearRespaldo(texto)
+                if (leidos.isEmpty()) {
+                    respaldoMsg = "El archivo no contiene cumpleaños válidos."
+                } else {
+                    val claves = lista.filter { it.tipo == "GENERAL" }.map { claveCumple(it) }.toHashSet()
+                    var siguiente = (lista.maxOfOrNull { it.id } ?: 0L) + 1L
+                    val nuevos = ArrayList<Obligacion>()
+                    for (o in leidos) {
+                        val c = claveCumple(o)
+                        if (c in claves) continue
+                        claves.add(c)
+                        nuevos.add(o.copy(id = siguiente))
+                        siguiente += 1L
+                    }
+                    if (nuevos.isEmpty()) {
+                        respaldoMsg = "Nada nuevo: los ${leidos.size} cumpleaños del archivo ya estaban guardados."
+                    } else {
+                        guardar(lista + nuevos)
+                        respaldoMsg = "Listo: se agregaron ${nuevos.size} cumpleaños (${leidos.size - nuevos.size} ya existían)."
+                    }
+                }
+            } catch (e: Exception) {
+                respaldoMsg = "No se pudo restaurar el respaldo: ${e.message ?: "archivo inválido"}"
+            }
         }
     }
 
@@ -295,9 +348,18 @@ fun PantallaPrincipal() {
                     }
                 }
                 1 -> VistaAgregar(
+                    totalCumple = lista.count { it.tipo == "GENERAL" },
                     onNuevoSunat = { editorTipo = Config.SUNAT },
                     onNuevoGeneral = { editorTipo = Config.GENERAL },
-                    onAjustes = { elegirAjustes = true }
+                    onAjustes = { elegirAjustes = true },
+                    onExportar = {
+                        if (lista.any { it.tipo == "GENERAL" }) {
+                            exportarRespaldo.launch("respaldo_cumpleanos_${LocalDate.now()}.json")
+                        } else {
+                            respaldoMsg = "Todavía no tienes cumpleaños para respaldar."
+                        }
+                    },
+                    onImportar = { importarRespaldo.launch(arrayOf("*/*")) }
                 )
                 else -> VistaAcerca(
                     vista = acercaVista,
@@ -375,6 +437,14 @@ fun PantallaPrincipal() {
         )
     }
     configTipo?.let { tipo -> DialogoConfig(tipo = tipo, onCerrar = { configTipo = null }) }
+    respaldoMsg?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { respaldoMsg = null },
+            title = { Text("Respaldo de cumpleaños") },
+            text = { Text(msg) },
+            confirmButton = { Button(onClick = { respaldoMsg = null }) { Text("OK") } }
+        )
+    }
     textoCrash?.let { txt ->
         AlertDialog(
             onDismissRequest = { textoCrash = null },
@@ -577,7 +647,14 @@ fun VistaDetalle(
 }
 
 @Composable
-fun VistaAgregar(onNuevoSunat: () -> Unit, onNuevoGeneral: () -> Unit, onAjustes: () -> Unit) {
+fun VistaAgregar(
+    totalCumple: Int,
+    onNuevoSunat: () -> Unit,
+    onNuevoGeneral: () -> Unit,
+    onAjustes: () -> Unit,
+    onExportar: () -> Unit,
+    onImportar: () -> Unit
+) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -607,6 +684,28 @@ fun VistaAgregar(onNuevoSunat: () -> Unit, onNuevoGeneral: () -> Unit, onAjustes
                 )
             }
         }
+
+        Spacer(Modifier.height(24.dp))
+        Text("💾 Respaldo de cumpleaños", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Guarda tus cumpleaños en un archivo para no perderlos si cambias de teléfono, y recupéralos cuando quieras.",
+            fontSize = 13.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onExportar, modifier = Modifier.weight(1f)) {
+                Text("📁 Exportar")
+            }
+            OutlinedButton(onClick = onImportar, modifier = Modifier.weight(1f)) {
+                Text("📂 Restaurar")
+            }
+        }
+        Text(
+            if (totalCumple == 1) "Tienes 1 cumpleaño guardado." else "Tienes $totalCumple cumpleaños guardados.",
+            fontSize = 12.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        )
 
         Spacer(Modifier.height(24.dp))
         Text("Alarmas", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ORO)
@@ -791,7 +890,7 @@ fun PantallaVersion(onVolver: () -> Unit) {
 fun LineaVersion(clave: String, valor: String) {
     Row {
         Text("$clave:", color = Color(0xFF9C968A), fontSize = 14.sp, modifier = Modifier.width(90.dp))
-        Text(valor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(valor, color = Color(0xFFEDE6D6), fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -844,146 +943,179 @@ fun DialogoEditor(
     var anioTxt by remember(clave) { mutableStateOf((inicial?.anioEspecifico ?: LocalDate.now().year).toString()) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onCerrar,
-        title = { Text(if (inicial == null) "Nuevo ($tipo)" else "Editar: ${inicial.nombre.ifBlank { "(sin nombre)" }}") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 430.dp)) {
-                OutlinedTextField(
-                    value = nombre,
-                    onValueChange = { nombre = it },
-                    label = { Text("Nombre") },
-                    placeholder = { Text(if (esSunat) "ej: IGV MENSUAL, RENTA, ETC" else "ej: Cumpleaños, Pago de Servicios, etc") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = detalle,
-                    onValueChange = { detalle = it },
-                    label = { Text("Detalle (opcional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+    BackHandler { onCerrar() }
+
+    fun confirmar() {
+        val nom = nombre.trim()
+        if (nom.isEmpty()) {
+            error = "Ponle un nombre al recordatorio."
+            return
+        }
+        val aviso = avisoTxt.trim().toIntOrNull()?.coerceIn(1, 30) ?: 5
+        var ven: Map<Int, Int> = emptyMap()
+        var dia = 0; var mes = 0
+        var anio: Int? = null
+        var repiteAnual = false
+        if (esSunat) {
+            val mapa = linkedMapOf<Int, Int>()
+            for (m in 1..12) {
+                val d = diasMes[m - 1].trim().toIntOrNull()
+                if (d != null && d in 1..31) mapa[m] = d
+            }
+            ven = mapa
+        } else {
+            dia = (diaTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 31)
+            mes = (mesTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 12)
+            repiteAnual = repite
+            if (!repite) anio = anioTxt.trim().toIntOrNull()
+            if (diaTxt.trim().isEmpty() || mesTxt.trim().isEmpty()) {
+                error = "Revisa el día y el mes."
+                return
+            }
+        }
+        val obj = Obligacion(
+            id = inicial?.id ?: nuevoId,
+            nombre = nom,
+            detalle = detalle.trim(),
+            tipo = tipo,
+            vencimientos = ven,
+            diaMes = dia,
+            mesAnual = mes,
+            repetirAnual = repiteAnual,
+            anioEspecifico = anio,
+            diasAviso = aviso,
+            periodoDeclarado = inicial?.periodoDeclarado
+        )
+        onGuardar(obj)
+        onCerrar()
+    }
+
+    // Diálogo propio en vez de AlertDialog: el desplazamiento siempre funciona
+    // y los 12 meses entran de una sola vista en una grilla de 3 filas x 4 columnas.
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color(0x99000000))
+            .pointerInput(Unit) { detectTapGestures { } }
+            .systemBarsPadding()
+            .padding(14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            color = Color(0xFF1C1913),
+            contentColor = Color(0xFFEDE6D6),
+            shape = RoundedCornerShape(16.dp),
+            shadowElevation = 8.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    if (inicial == null) "Nuevo ($tipo)" else "Editar: ${inicial.nombre.ifBlank { "(sin nombre)" }}",
+                    color = ORO, fontWeight = FontWeight.Bold, fontSize = 17.sp
                 )
                 Spacer(Modifier.height(10.dp))
-
-                if (esSunat) {
-                    Text(
-                        "Cronograma del año: escribe el DÍA en que vences cada período. El período se declara el mes ANTERIOR (ej: AGO con 12 → vence el 12 de setiembre). Deja vacío lo que no aplique.",
-                        fontSize = 12.sp, color = Color(0xFF9C968A)
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                    OutlinedTextField(
+                        value = nombre,
+                        onValueChange = { nombre = it },
+                        label = { Text("Nombre") },
+                        placeholder = { Text(if (esSunat) "ej: IGV MENSUAL, RENTA, ETC" else "ej: Cumpleaños, Pago de Servicios, etc") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
-                    for (m in 1..12) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                MESES_ANIO[m - 1],
-                                fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ORO,
-                                modifier = Modifier.width(44.dp)
+                    OutlinedTextField(
+                        value = detalle,
+                        onValueChange = { detalle = it },
+                        label = { Text("Detalle (opcional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(10.dp))
+
+                    if (esSunat) {
+                        Text(
+                            "Escribe el DÍA en que vences cada período (se declara el mes anterior: ej: AGO con 12 → vence el 12 de setiembre). Deja vacío lo que no aplique.",
+                            fontSize = 12.sp, color = Color(0xFF9C968A)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        for (fila in 0 until 3) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                for (k in 0 until 4) {
+                                    val m = fila * 4 + k + 1
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            MESES_ANIO[m - 1],
+                                            fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ORO,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        OutlinedTextField(
+                                            value = diasMes[m - 1],
+                                            onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diasMes[m - 1] = v },
+                                            placeholder = { Text("—", fontSize = 12.sp, color = Color(0xFF6B665C), textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) },
+                                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp, textAlign = TextAlign.Center),
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(6.dp))
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = diaTxt,
+                                onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diaTxt = v },
+                                label = { Text("Día") }, singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.weight(1f)
                             )
                             OutlinedTextField(
-                                value = diasMes[m - 1],
-                                onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diasMes[m - 1] = v },
-                                placeholder = { Text("—", color = Color(0xFF6B665C)) },
-                                singleLine = true,
+                                value = mesTxt,
+                                onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) mesTxt = v },
+                                label = { Text("Mes (1-12)") }, singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = repite, onCheckedChange = { repite = it })
+                            Text("Se repite cada año", fontSize = 14.sp)
+                        }
+                        if (!repite) {
+                            OutlinedTextField(
+                                value = anioTxt,
+                                onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) anioTxt = v },
+                                label = { Text("Año (ej: 2026)") }, singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = diaTxt,
-                            onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diaTxt = v },
-                            label = { Text("Día") }, singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = mesTxt,
-                            onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) mesTxt = v },
-                            label = { Text("Mes (1-12)") }, singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = repite, onCheckedChange = { repite = it })
-                        Text("Se repite cada año", fontSize = 14.sp)
-                    }
-                    if (!repite) {
-                        OutlinedTextField(
-                            value = anioTxt,
-                            onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) anioTxt = v },
-                            label = { Text("Año (ej: 2026)") }, singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
+
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = avisoTxt,
+                        onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) avisoTxt = v },
+                        label = { Text("Avisar con (días de anticipación)") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    error?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
                     }
                 }
-
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = avisoTxt,
-                    onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) avisoTxt = v },
-                    label = { Text("Avisar con (días de anticipación)") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                error?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onCerrar, modifier = Modifier.weight(1f)) { Text("Cancelar") }
+                    Button(onClick = { confirmar() }, modifier = Modifier.weight(1f)) { Text("Guardar") }
                 }
             }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val nom = nombre.trim()
-                if (nom.isEmpty()) {
-                    error = "Ponle un nombre al recordatorio."
-                    return@Button
-                }
-                val aviso = avisoTxt.trim().toIntOrNull()?.coerceIn(1, 30) ?: 5
-                var ven: Map<Int, Int> = emptyMap()
-                var dia = 0; var mes = 0
-                var anio: Int? = null
-                var repiteAnual = false
-                if (esSunat) {
-                    val mapa = linkedMapOf<Int, Int>()
-                    for (m in 1..12) {
-                        val d = diasMes[m - 1].trim().toIntOrNull()
-                        if (d != null && d in 1..31) mapa[m] = d
-                    }
-                    ven = mapa
-                } else {
-                    dia = (diaTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 31)
-                    mes = (mesTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 12)
-                    repiteAnual = repite
-                    if (!repite) anio = anioTxt.trim().toIntOrNull()
-                    if (diaTxt.trim().isEmpty() || mesTxt.trim().isEmpty()) {
-                        error = "Revisa el día y el mes."
-                        return@Button
-                    }
-                }
-                val obj = Obligacion(
-                    id = inicial?.id ?: nuevoId,
-                    nombre = nom,
-                    detalle = detalle.trim(),
-                    tipo = tipo,
-                    vencimientos = ven,
-                    diaMes = dia,
-                    mesAnual = mes,
-                    repetirAnual = repiteAnual,
-                    anioEspecifico = anio,
-                    diasAviso = aviso,
-                    periodoDeclarado = inicial?.periodoDeclarado
-                )
-                onGuardar(obj)
-                onCerrar()
-            }) { Text("Guardar") }
-        },
-        dismissButton = { TextButton(onClick = onCerrar) { Text("Cancelar") } }
-    )
+        }
+    }
 }
 
 @Composable
@@ -995,76 +1127,96 @@ fun DialogoConfig(tipo: String, onCerrar: () -> Unit) {
     var itvTxt by remember { mutableStateOf(actuales.intervaloMin.toString()) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onCerrar,
-        title = { Text("Alarma — $tipo") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 380.dp)) {
-                Text(
-                    "Mientras haya algo pendiente, la alarma SUENA cada cierto tiempo entre estas horas. Cambias solo el bloque de $tipo; el otro tipo conserva lo suyo.",
-                    fontSize = 12.sp, color = Color(0xFF9C968A)
-                )
+    BackHandler { onCerrar() }
+
+    fun confirmar() {
+        val ini = validarHora(iniTxt)
+        val fin = validarHora(finTxt)
+        val itv = itvTxt.trim().toIntOrNull()?.coerceIn(15, 1440)
+        if (ini == null || fin == null || itv == null) {
+            error = "Revisa las horas (ej: 08:00) y el intervalo (número de minutos)."
+            return
+        }
+        Config.guardar(ctx, tipo, Config.Ajustes(ini, fin, itv))
+        AlertScheduler.programarSiguiente(ctx, tipo)
+        onCerrar()
+    }
+
+    Box(
+        Modifier.fillMaxSize()
+            .background(Color(0x99000000))
+            .pointerInput(Unit) { detectTapGestures { } }
+            .systemBarsPadding()
+            .padding(14.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            color = Color(0xFF1C1913),
+            contentColor = Color(0xFFEDE6D6),
+            shape = RoundedCornerShape(16.dp),
+            shadowElevation = 8.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Alarma — $tipo", color = ORO, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = iniTxt, onValueChange = { iniTxt = it },
-                    label = { Text("Hora de inicio (ej: 08:00)") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = finTxt, onValueChange = { finTxt = it },
-                    label = { Text("Hora de fin (ej: 22:00)") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = itvTxt,
-                    onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) itvTxt = v },
-                    label = { Text("Intervalo en minutos (ej: 30 o 120)") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Mínimo 15 minutos. Ahora funciona con cualquier intervalo, también de 1 hora o más.",
-                    fontSize = 12.sp, color = Color(0xFF9C968A)
-                )
-                error?.let {
+                Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+                    Text(
+                        "Mientras haya algo pendiente, la alarma SUENA cada cierto tiempo entre estas horas. Cambias solo el bloque de $tipo; el otro tipo conserva lo suyo.",
+                        fontSize = 12.sp, color = Color(0xFF9C968A)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = iniTxt, onValueChange = { iniTxt = it },
+                        label = { Text("Hora de inicio (ej: 08:00)") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
+                    OutlinedTextField(
+                        value = finTxt, onValueChange = { finTxt = it },
+                        label = { Text("Hora de fin (ej: 22:00)") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = itvTxt,
+                        onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) itvTxt = v },
+                        label = { Text("Intervalo en minutos (ej: 30 o 120)") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Mínimo 15 minutos. Funciona con cualquier intervalo, también de 1 hora o más.",
+                        fontSize = 12.sp, color = Color(0xFF9C968A)
+                    )
+                    error?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    TextButton(onClick = {
+                        try {
+                            if (Build.VERSION.SDK_INT >= 31) {
+                                ctx.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${ctx.packageName}")))
+                            } else {
+                                error = "Tu Android ya permite alarmas exactas."
+                            }
+                        } catch (_: Exception) { error = "No se pudo abrir el ajuste." }
+                    }) { Text("Permitir alarmas exactas (recomendado)") }
+                    TextButton(onClick = {
+                        try { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                        catch (_: Exception) { error = "No se pudo abrir el ajuste." }
+                    }) { Text("Quitar optimización de batería") }
                 }
-                Spacer(Modifier.height(10.dp))
-                TextButton(onClick = {
-                    try {
-                        if (Build.VERSION.SDK_INT >= 31) {
-                            ctx.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${ctx.packageName}")))
-                        } else {
-                            error = "Tu Android ya permite alarmas exactas."
-                        }
-                    } catch (_: Exception) { error = "No se pudo abrir el ajuste." }
-                }) { Text("Permitir alarmas exactas (recomendado)") }
-                TextButton(onClick = {
-                    try { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-                    catch (_: Exception) { error = "No se pudo abrir el ajuste." }
-                }) { Text("Quitar optimización de batería") }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onCerrar, modifier = Modifier.weight(1f)) { Text("Cancelar") }
+                    Button(onClick = { confirmar() }, modifier = Modifier.weight(1f)) { Text("Guardar") }
+                }
             }
-        },
-        confirmButton = {
-            Button(onClick = {
-                val ini = validarHora(iniTxt)
-                val fin = validarHora(finTxt)
-                val itv = itvTxt.trim().toIntOrNull()?.coerceIn(15, 1440)
-                if (ini == null || fin == null || itv == null) {
-                    error = "Revisa las horas (ej: 08:00) y el intervalo (número de minutos)."
-                    return@Button
-                }
-                Config.guardar(ctx, tipo, Config.Ajustes(ini, fin, itv))
-                AlertScheduler.programarSiguiente(ctx, tipo)
-                onCerrar()
-            }) { Text("Guardar") }
-        },
-        dismissButton = { TextButton(onClick = onCerrar) { Text("Cancelar") } }
-    )
+        }
+    }
 }
 
 private fun validarHora(s: String): LocalTime? = try {
@@ -1076,3 +1228,64 @@ private fun validarHora(s: String): LocalTime? = try {
         LocalTime.of(h.coerceIn(0, 23), m.coerceIn(0, 59))
     }
 } catch (_: Exception) { null }
+
+// ==================== RESPALDO DE CUMPLEAÑOS (solo GENERAL) ====================
+
+/** Clave anti-duplicados: mismo nombre + misma fecha = mismo cumpleaño. */
+private fun claveCumple(o: Obligacion): String {
+    return o.nombre.trim().lowercase() + "|" + o.diaMes + "|" + o.mesAnual + "|" + (o.anioEspecifico ?: 0)
+}
+
+/** Arma el archivo de respaldo SOLO con los recordatorios de tipo GENERAL (cumpleaños). */
+private fun generarRespaldo(lista: List<Obligacion>): String {
+    val cumple = lista.filter { it.tipo == "GENERAL" }.sortedBy { it.nombre.lowercase() }
+    val arr = JSONArray()
+    for (o in cumple) {
+        val ob = JSONObject()
+        ob.put("nombre", o.nombre)
+        ob.put("detalle", o.detalle)
+        ob.put("diaMes", o.diaMes)
+        ob.put("mesAnual", o.mesAnual)
+        ob.put("repetirAnual", o.repetirAnual)
+        if (o.anioEspecifico != null) ob.put("anio", o.anioEspecifico)
+        ob.put("diasAviso", o.diasAviso)
+        if (o.periodoDeclarado != null) ob.put("periodoDeclarado", o.periodoDeclarado)
+        arr.put(ob)
+    }
+    val raiz = JSONObject()
+    raiz.put("app", "RecordaSUNAT")
+    raiz.put("tipoRespaldo", "CUMPLEANOS")
+    raiz.put("fecha", LocalDate.now().toString())
+    raiz.put("cantidad", cumple.size)
+    raiz.put("cumpleanos", arr)
+    return raiz.toString(2)
+}
+
+/** Lee el archivo de respaldo y devuelve la lista de cumpleaños encontrados. */
+private fun parsearRespaldo(texto: String): List<Obligacion> {
+    val raiz = JSONObject(texto)
+    val arr = raiz.optJSONArray("cumpleanos") ?: return emptyList()
+    val leidos = ArrayList<Obligacion>()
+    for (i in 0 until arr.length()) {
+        val ob = arr.getJSONObject(i)
+        val nombre = if (ob.isNull("nombre")) "" else ob.optString("nombre").trim()
+        if (nombre.isEmpty()) continue
+        val detalle = if (ob.isNull("detalle")) "" else ob.optString("detalle")
+        leidos.add(
+            Obligacion(
+                id = 0L,
+                nombre = nombre,
+                detalle = detalle,
+                tipo = "GENERAL",
+                vencimientos = emptyMap(),
+                diaMes = ob.optInt("diaMes", 1).coerceIn(1, 31),
+                mesAnual = ob.optInt("mesAnual", 1).coerceIn(1, 12),
+                repetirAnual = ob.optBoolean("repetirAnual", true),
+                anioEspecifico = if (ob.has("anio") && !ob.isNull("anio")) ob.optInt("anio") else null,
+                diasAviso = ob.optInt("diasAviso", 5).coerceIn(1, 30),
+                periodoDeclarado = if (ob.has("periodoDeclarado") && !ob.isNull("periodoDeclarado")) ob.optString("periodoDeclarado") else null
+            )
+        )
+    }
+    return leidos
+}
