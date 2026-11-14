@@ -786,8 +786,9 @@ fun DialogoFormulario(
                                     CeldaDiaMes(
                                         nombre = mesesCortos[i],
                                         valor = diasGrid[i],
+                                        alCambiar = { v -> diasGrid = diasGrid.toMutableList().also { it[i] = v } },
                                         modifier = Modifier.weight(1f)
-                                    ) { v -> diasGrid = diasGrid.toMutableList().also { it[i] = v } }
+                                    )
                                 }
                             }
                         }
