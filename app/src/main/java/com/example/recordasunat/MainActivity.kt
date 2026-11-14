@@ -1,29 +1,68 @@
 package com.example.recordasunat
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -31,196 +70,367 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import java.io.File
 import java.time.LocalDate
-
-private val MESES = listOf("Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic")
-private val DORADO = Color(0xFFD4AF37)
+import java.time.LocalTime
+import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
-
-    private val pedirPermiso =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Notifier.crearCanales(this)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED)
-            pedirPermiso.launch(Manifest.permission.POST_NOTIFICATIONS)
+        instalarReporteDeCrash()
+        try {
+            Notifier.crearCanales(this)
+            ReminderWorker.programar(this)
+            AlertScheduler.programarSiguiente(this, Config.SUNAT)
+            AlertScheduler.programarSiguiente(this, Config.GENERAL)
+        } catch (_: Exception) { }
+        setContent {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = Color(0xFFD4AF37),
+                    onPrimary = Color(0xFF1A1400),
+                    background = Color(0xFF121110),
+                    onBackground = Color(0xFFEDE6D6),
+                    surface = Color(0xFF1C1913),
+                    onSurface = Color(0xFFEDE6D6),
+                    surfaceVariant = Color(0xFF2B2312),
+                    onSurfaceVariant = Color(0xFFD4AF37),
+                    error = Color(0xFFCF6679)
+                )
+            ) { Raiz() }
+        }
+    }
 
-        ReminderWorker.programar(this)
-        ReminderWorker.ejecutarAhora(this)
-        AlertScheduler.programarTodo(this)
-        setContent { MaterialTheme(colorScheme = darkColorScheme()) { Raiz() } }
+    /**
+     * Red de seguridad: si la app llega a botar, guarda el error en un
+     * archivo interno y lo muestra en pantalla (aviso flotante), para poder
+     * diagnosticarlo sin computadora.
+     */
+    private fun instalarReporteDeCrash() {
+        try {
+            val previo = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { hilo, error ->
+                try {
+                    val marca = java.text.SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+                        .format(java.util.Date())
+                    File(filesDir, "crash.txt").writeText(
+                        "$marca\n${error.javaClass.name}: ${error.message ?: "(sin mensaje)"}\n\n" +
+                            error.stackTraceToString().take(1500)
+                    )
+                    try {
+                        Toast.makeText(
+                            applicationContext,
+                            "RecordaSUNAT falló: ${error.javaClass.simpleName}: ${error.message?.take(110) ?: ""}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (_: Exception) { }
+                } catch (_: Exception) { }
+                previo?.uncaughtException(hilo, error)
+            }
+        } catch (_: Exception) { }
     }
 }
+
+private val MESES_ANIO = listOf("ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC")
+private val ORO = Color(0xFFD4AF37)
+private val ROJO_SUAVE = Color(0xFFE57373)
+
+private val POLITICA: List<Pair<String, String>> = listOf(
+    "1. Almacenamiento Estricto en el Dispositivo" to
+        "Esta aplicación opera bajo un modelo de almacenamiento estrictamente local. Todos los recordatorios, " +
+        "fechas de cumpleaños, nombres, notas y configuraciones ingresados por el usuario se guardan únicamente " +
+        "en la memoria interna de su dispositivo. El desarrollador no recopila, transmite, almacena en servidores " +
+        "externos ni comparte ningún dato personal o información ingresada en la aplicación.",
+    "2. Ausencia de Rastreo y Servicios de Terceros" to
+        "Esta aplicación no utiliza cookies, identificadores de publicidad, herramientas de analítica ni servicios " +
+        "de rastreo de terceros. Su actividad dentro de la aplicación es completamente privada y no se monitorea " +
+        "ni se perfila con fines comerciales o estadísticos. Al utilizar la aplicación, usted acepta estas " +
+        "condiciones de uso local.",
+    "3. Permisos del Sistema" to
+        "La aplicación solicita únicamente permisos de notificaciones y alarmas del sistema con el exclusivo " +
+        "propósito de alertar al usuario sobre los eventos y recordatorios programados localmente. No se accede a " +
+        "la cámara, micrófono, ubicación ni a otros archivos personales del teléfono sin su acción directa.",
+    "4. Seguridad y Eliminación de Datos" to
+        "Al almacenarse los datos exclusivamente en el dispositivo del usuario, este mantiene el control total y " +
+        "la seguridad sobre ellos mediante los mecanismos de protección propios de su teléfono. Puede editar o " +
+        "eliminar cualquier recordatorio directamente desde la aplicación, o borrar toda la información de forma " +
+        "permanente desinstalando la aplicación o borrando los datos de almacenamiento desde los ajustes de su " +
+        "dispositivo.",
+    "5. Exención de Responsabilidad por Pérdida de Datos" to
+        "Dado que toda la información se almacena exclusivamente de forma local en su dispositivo y no existe " +
+        "sincronización ni respaldo en servidores externos del desarrollador, el usuario es el único responsable " +
+        "de conservar sus datos. En caso de pérdida, robo, daño del dispositivo, restablecimiento de fábrica o " +
+        "desinstalación de la aplicación sin haber realizado una copia de seguridad previa (si dicha función " +
+        "estuviera disponible), los recordatorios y fechas almacenadas se perderán de forma permanente y no podrán " +
+        "ser recuperados por el desarrollador.",
+    "6. Promoción de Servicios Propios" to
+        "Esta aplicación puede mostrar espacios informativos o promocionales sobre servicios de ingeniería, " +
+        "construcción y estructuras metálicas ofrecidas por el desarrollador. Estos enlaces son estáticos, no " +
+        "utilizan cookies de rastreo publicitario y solo redirigen a canales externos de contacto si el usuario " +
+        "decide pulsarlos voluntariamente."
+)
 
 @Composable
 fun Raiz() {
     val ctx = LocalContext.current
     val fondoId = remember { ctx.resources.getIdentifier("fondo", "drawable", ctx.packageName) }
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         if (fondoId != 0) {
-            Image(painterResource(fondoId), contentDescription = null,
-                contentScale = ContentScale.Crop, alpha = 0.20f,
-                modifier = Modifier.fillMaxSize())
+            Image(
+                painter = painterResource(fondoId),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alpha = 0.20f,
+                modifier = Modifier.matchParentSize()
+            )
         }
         PantallaPrincipal()
     }
 }
 
-/** Estado y texto resumen del recordatorio (lo usan la lista y el detalle) */
-private fun estadoTexto(o: Obligacion, hoy: LocalDate): Pair<Color, String> {
-    val esGeneral = o.tipo == "GENERAL"
-    return when (val est = Planner.estadoDe(o, hoy)) {
-        is Planner.Estado.Atendido -> Color(0xFF2E7D32) to
-            if (esGeneral) "✅ Atendido (ocurrencia ${est.etiqueta})"
-            else "✅ Declarado (periodo ${est.etiqueta})"
-        is Planner.Estado.Vencido -> Color(0xFFC62828) to
-            if (esGeneral) "🔴 ¡La fecha ya pasó! Era el ${Planner.fmt(est.vencimiento)} (hace ${est.diasAtraso} día(s))"
-            else "🔴 ¡VENCIDO hace ${est.diasAtraso} día(s)! Venció el ${Planner.fmt(est.vencimiento)}"
-        Planner.Estado.VenceHoy -> Color(0xFFC62828) to "🔴 ¡VENCE HOY!"
-        is Planner.Estado.PorVencer -> Color(0xFFEF6C00) to
-            "⏰ ${if (esGeneral) "Falta(n)" else "Vence en"} ${est.faltan} día(s) (${Planner.fmt(est.vencimiento)})"
-        Planner.Estado.NoAplica -> Color(0xFF9E9E9E) to "Sin vencimiento este mes"
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PantallaPrincipal() {
-    val context = LocalContext.current
+    val ctx = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var lista by remember { mutableStateOf(Store.cargar(context)) }
+
     var tab by remember { mutableStateOf(0) }
-    var nuevoTipo by remember { mutableStateOf<String?>(null) }
-    var detalleId by remember { mutableStateOf<Long?>(null) }
-    var editandoId by remember { mutableStateOf<Long?>(null) }
-    var eliminandoId by remember { mutableStateOf<Long?>(null) }
-    var configurando by remember { mutableStateOf(false) }
-    val hoy = LocalDate.now()
+    var lista by remember { mutableStateOf(listOf<Obligacion>()) }
+    var detalleId by remember { mutableStateOf<Int?>(null) }
+    var editorTipo by remember { mutableStateOf<String?>(null) }
+    var editarId by remember { mutableStateOf<Int?>(null) }
+    var borrarId by remember { mutableStateOf<Int?>(null) }
+    var configTipo by remember { mutableStateOf<String?>(null) }
+    var elegirAjustes by remember { mutableStateOf(false) }
+    var textoCrash by remember { mutableStateOf<String?>(null) }
+    var acercaVista by remember { mutableStateOf<String?>(null) }
+
+    fun recargar() {
+        lista = try { Store.cargar(ctx) } catch (_: Exception) { listOf() }
+    }
+
+    fun guardar(nueva: List<Obligacion>) {
+        try { Store.guardar(ctx, ArrayList(nueva)) } catch (_: Exception) { }
+        lista = nueva
+        ReminderWorker.ejecutarAhora(ctx)
+        AlertScheduler.programarSiguiente(ctx, Config.SUNAT)
+        AlertScheduler.programarSiguiente(ctx, Config.GENERAL)
+    }
 
     DisposableEffect(lifecycleOwner) {
-        val obs = LifecycleEventObserver { _, ev ->
-            if (ev == Lifecycle.Event.ON_RESUME) lista = Store.cargar(context)
+        val obs = LifecycleEventObserver { _, evento ->
+            if (evento == Lifecycle.Event.ON_RESUME) {
+                recargar()
+                textoCrash = try {
+                    val f = File(ctx.filesDir, "crash.txt")
+                    if (f.exists()) f.readText().take(800) else null
+                } catch (_: Exception) { null }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
+    LaunchedEffect(Unit) { recargar() }
 
-    fun guardar(nueva: List<Obligacion>) {
-        val l = nueva.toMutableList()
-        lista = l
-        Store.guardar(context, l)
-        ReminderWorker.ejecutarAhora(context)
-        AlertScheduler.programarTodo(context)
+    val pedirPermiso = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 && !Notifier.permisoConcedido(ctx)) {
+            pedirPermiso.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     Scaffold(
         containerColor = Color.Transparent,
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = { Text("Mis recordatorios") },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                    actions = {
-                        IconButton(onClick = { configurando = true }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Ajustes de alertas")
-                        }
-                    })
-                TabRow(selectedTabIndex = tab, containerColor = Color.Transparent) {
-                    listOf("📋 Programadas", "➕ Agregar").forEachIndexed { i, titulo ->
-                        Tab(selected = tab == i, onClick = { tab = i }, text = { Text(titulo) })
-                    }
-                }
-            }
-        },
         floatingActionButton = {
-            if (tab == 0) FloatingActionButton(onClick = { tab = 1 }) {
-                Icon(Icons.Default.Add, contentDescription = "Agregar")
+            if (tab == 0 && detalleId == null) {
+                FloatingActionButton(
+                    onClick = { tab = 1 },
+                    containerColor = ORO,
+                    contentColor = Color(0xFF1A1400)
+                ) { Icon(Icons.Filled.Add, contentDescription = "Agregar") }
             }
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Text(
+                "RecordaSUNAT",
+                color = ORO,
+                fontWeight = FontWeight.Bold,
+                fontSize = 22.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+            TabRow(selectedTabIndex = tab) {
+                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("📋 Programadas") })
+                Tab(selected = tab == 1, onClick = { tab = 1; detalleId = null }, text = { Text("➕ Agregar") })
+                Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("ℹ️ Acerca de") })
+            }
             when (tab) {
-                0 -> ListaProgramadas(lista = lista, hoy = hoy, onAbrir = { detalleId = it })
-                else -> VistaAgregar(
-                    onSunat = { nuevoTipo = "SUNAT" },
-                    onGeneral = { nuevoTipo = "GENERAL" })
+                0 -> {
+                    val actual = detalleId?.let { id -> lista.firstOrNull { it.id == id } }
+                    if (actual != null) {
+                        VistaDetalle(
+                            o = actual,
+                            onVolver = { detalleId = null },
+                            onDeclarar = {
+                                val etiqueta = runCatching { Planner.etiquetaVigente(actual, LocalDate.now()) }.getOrNull()
+                                guardar(lista.map { if (it.id == actual.id) it.copy(periodoDeclarado = etiqueta) else it })
+                                try { Notifier.cancelar(ctx, actual.id) } catch (_: Exception) { }
+                            },
+                            onDeshacer = {
+                                guardar(lista.map { if (it.id == actual.id) it.copy(periodoDeclarado = null) else it })
+                            },
+                            onEditar = { editarId = actual.id },
+                            onEliminar = { borrarId = actual.id }
+                        )
+                    } else {
+                        ListaProgramadas(lista, onAbrir = { detalleId = it }, onIrAgregar = { tab = 1 })
+                    }
+                }
+                1 -> VistaAgregar(
+                    onNuevoSunat = { editorTipo = Config.SUNAT },
+                    onNuevoGeneral = { editorTipo = Config.GENERAL },
+                    onAjustes = { elegirAjustes = true }
+                )
+                else -> VistaAcerca(
+                    vista = acercaVista,
+                    onVolver = { acercaVista = null },
+                    onAbrir = { acercaVista = it }
+                )
             }
         }
     }
 
-    // Detalle: se resuelve SIEMPRE contra la lista fresca (se actualiza en vivo)
-    detalleId?.let { id -> lista.find { it.id == id } }?.let { o ->
-        DialogoDetalle(
-            o = o, hoy = hoy,
-            onDeclarar = { guardar(lista.map {
-                if (it.id == o.id) it.copy(periodoDeclarado = Planner.etiquetaVigente(it, hoy)) else it }) },
-            onDeshacer = { guardar(lista.map {
-                if (it.id == o.id) it.copy(periodoDeclarado = null) else it }) },
-            onEditar = { detalleId = null; editandoId = o.id },
-            onEliminar = { detalleId = null; eliminandoId = o.id },
-            onCerrar = { detalleId = null })
-    }
-
-    editandoId?.let { id -> lista.find { it.id == id } }?.let { actual ->
-        DialogoEditor(tipo = actual.tipo, inicial = actual,
-            onGuardar = { nueva -> guardar(lista.map {
-                if (it.id == actual.id) nueva.copy(id = actual.id) else it }); editandoId = null },
-            onCancelar = { editandoId = null })
-    }
-
-    eliminandoId?.let { id -> lista.find { it.id == id } }?.let { victima ->
-        AlertDialog(
-            onDismissRequest = { eliminandoId = null },
-            title = { Text("¿Eliminar recordatorio?") },
-            text = { Text("Se eliminará \"${victima.nombre}\" y todos sus avisos. Esta acción no se puede deshacer.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    Notifier.cancelar(context, victima.id)
-                    guardar(lista.filter { it.id != victima.id })
-                    eliminandoId = null
-                }) { Text("Eliminar", color = MaterialTheme.colorScheme.error) }
+    // ---------- Diálogos ----------
+    editorTipo?.let { tipo ->
+        DialogoEditor(
+            tipo = tipo,
+            inicial = null,
+            nuevoId = (lista.maxOfOrNull { it.id } ?: 0) + 1,
+            onGuardar = { nuevo ->
+                guardar(lista + nuevo)
+                tab = 0
             },
-            dismissButton = { TextButton(onClick = { eliminandoId = null }) { Text("Cancelar") } })
+            onCerrar = { editorTipo = null }
+        )
     }
-
-    nuevoTipo?.let { t ->
-        DialogoEditor(tipo = t, inicial = null,
-            onGuardar = { nueva -> guardar(lista + nueva.copy(id = System.currentTimeMillis())); nuevoTipo = null },
-            onCancelar = { nuevoTipo = null })
+    editarId?.let { id ->
+        val obj = lista.firstOrNull { it.id == id }
+        if (obj != null) {
+            DialogoEditor(
+                tipo = obj.tipo,
+                inicial = obj,
+                nuevoId = 0,
+                onGuardar = { editado ->
+                    guardar(lista.map { if (it.id == editado.id) editado else it })
+                },
+                onCerrar = { editarId = null }
+            )
+        }
     }
-
-    if (configurando) DialogoConfig(onCerrar = { configurando = false })
+    borrarId?.let { id ->
+        val obj = lista.firstOrNull { it.id == id }
+        if (obj != null) {
+            AlertDialog(
+                onDismissRequest = { borrarId = null },
+                title = { Text("¿Eliminar \"${obj.nombre}\"?") },
+                text = { Text("Se borra para siempre. No afecta a los demás recordatorios.") },
+                confirmButton = {
+                    Button(onClick = {
+                        guardar(lista.filterNot { it.id == id })
+                        borrarId = null
+                        detalleId = null
+                    }) { Text("Eliminar") }
+                },
+                dismissButton = { TextButton(onClick = { borrarId = null }) { Text("Cancelar") } }
+            )
+        }
+    }
+    if (elegirAjustes) {
+        AlertDialog(
+            onDismissRequest = { elegirAjustes = false },
+            title = { Text("Ajustes de alarma") },
+            text = {
+                Column {
+                    Text("Cada tipo tiene su propio horario e intervalo:", fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = { elegirAjustes = false; configTipo = Config.SUNAT }, modifier = Modifier.fillMaxWidth()) {
+                        Text("SUNAT")
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Button(onClick = { elegirAjustes = false; configTipo = Config.GENERAL }, modifier = Modifier.fillMaxWidth()) {
+                        Text("GENERAL")
+                    }
+                }
+            },
+            confirmButton = { },
+            dismissButton = { TextButton(onClick = { elegirAjustes = false }) { Text("Cerrar") } }
+        )
+    }
+    configTipo?.let { tipo -> DialogoConfig(tipo = tipo, onCerrar = { configTipo = null }) }
+    textoCrash?.let { txt ->
+        AlertDialog(
+            onDismissRequest = { textoCrash = null },
+            title = { Text("Registro de error") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 300.dp)) {
+                    Text(txt, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    try { File(ctx.filesDir, "crash.txt").delete() } catch (_: Exception) { }
+                    textoCrash = null
+                }) { Text("Borrar registro") }
+            },
+            dismissButton = { TextButton(onClick = { textoCrash = null }) { Text("Cerrar") } }
+        )
+    }
 }
 
 @Composable
-fun ListaProgramadas(lista: List<Obligacion>, hoy: LocalDate, onAbrir: (Long) -> Unit) {
+fun ListaProgramadas(lista: List<Obligacion>, onAbrir: (Int) -> Unit, onIrAgregar: () -> Unit) {
+    val hoy = LocalDate.now()
+    val sunat = lista.filter { it.tipo != "GENERAL" }.sortedBy { it.nombre.lowercase() }
+    val general = lista.filter { it.tipo == "GENERAL" }.sortedBy { it.nombre.lowercase() }
+
     if (lista.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("No hay recordatorios.\nVe a la pestaña ➕ Agregar.",
-                textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
+        Column(
+            Modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text("Aún no tienes recordatorios", fontSize = 17.sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Toca el botón ➕ (o la pestaña Agregar) para crear el primero: el cronograma SUNAT del año o fechas propias como cumpleaños.",
+                fontSize = 14.sp, color = Color(0xFFB9B2A2), textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(14.dp))
+            Button(onClick = onIrAgregar) { Text("➕ Agregar uno ahora") }
         }
         return
     }
-    val sunat = lista.filter { it.tipo == "SUNAT" }
-    val general = lista.filter { it.tipo != "SUNAT" }
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
-        if (sunat.isNotEmpty()) {
-            item { Cintillo("📅 SUNAT", sunat.size) }
-            items(sunat, key = { it.id }) { o -> ItemCompacto(o, hoy) { onAbrir(o.id) } }
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)) {
+        item { Cintillo("📅 MENSUAL SUNAT", sunat.size) }
+        if (sunat.isEmpty()) {
+            item { TextoVacio("Nada del cronograma SUNAT todavía.") }
+        } else {
+            items(sunat) { o -> FilaNombre(o, hoy, onAbrir) }
         }
-        if (general.isNotEmpty()) {
-            item { Cintillo("⭐ GENERAL", general.size) }
-            items(general, key = { it.id }) { o -> ItemCompacto(o, hoy) { onAbrir(o.id) } }
+        item { Spacer(Modifier.height(10.dp)); Cintillo("⭐ GENERAL", general.size) }
+        if (general.isEmpty()) {
+            item { TextoVacio("Nada de fechas propias todavía.") }
+        } else {
+            items(general) { o -> FilaNombre(o, hoy, onAbrir) }
         }
         item { Spacer(Modifier.height(80.dp)) }
     }
@@ -228,263 +438,641 @@ fun ListaProgramadas(lista: List<Obligacion>, hoy: LocalDate, onAbrir: (Long) ->
 
 @Composable
 fun Cintillo(texto: String, total: Int) {
+    Surface(color = Color(0xFF2B2312), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "$texto  ($total)",
+            color = ORO,
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+        )
+    }
+}
+
+@Composable
+fun TextoVacio(msg: String) {
+    Text(msg, fontSize = 13.sp, color = Color(0xFF8D8779), modifier = Modifier.padding(horizontal = 4.dp, vertical = 10.dp))
+}
+
+private fun colorEstado(o: Obligacion, hoy: LocalDate): Color {
+    return try {
+        val venc = Planner.vencimientoVigente(o, hoy)
+        val etiqueta = Planner.etiquetaVigente(o, hoy)
+        val atendido = o.periodoDeclarado != null && o.periodoDeclarado == etiqueta
+        when {
+            atendido -> Color(0xFF66BB6A)
+            venc != null && Planner.tocaAvisar(o, hoy) -> ROJO_SUAVE
+            venc != null -> Color(0xFFFFB74D)
+            else -> Color(0xFF757575)
+        }
+    } catch (_: Exception) { Color(0xFF757575) }
+}
+
+@Composable
+fun FilaNombre(o: Obligacion, hoy: LocalDate, onAbrir: (Int) -> Unit) {
     Surface(
-        color = Color(0xFF2B2312),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp)
+        onClick = { onAbrir(o.id) },
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     ) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            Text(texto, color = DORADO, style = MaterialTheme.typography.titleSmall)
-            Spacer(Modifier.weight(1f))
-            Text("$total programado(s)", color = Color(0xFFB8A96A),
-                style = MaterialTheme.typography.labelSmall)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
+        ) {
+            Box(Modifier.size(10.dp).background(colorEstado(o, hoy), CircleShape))
+            Spacer(Modifier.width(10.dp))
+            Text(o.nombre.ifBlank { "(sin nombre)" }, fontSize = 15.sp, modifier = Modifier.weight(1f))
+            Text("›", color = ORO, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 @Composable
-fun ItemCompacto(o: Obligacion, hoy: LocalDate, onClick: () -> Unit) {
-    val (color, _) = estadoTexto(o, hoy)
-    Surface(
-        color = Color(0xFF1F1F1F),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clickable { onClick() }
-    ) {
-        Row(Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            Text(o.nombre, color = color, style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Abrir",
-                tint = Color(0xFF9E9E9E))
+fun VistaDetalle(
+    o: Obligacion,
+    onVolver: () -> Unit,
+    onDeclarar: () -> Unit,
+    onDeshacer: () -> Unit,
+    onEditar: () -> Unit,
+    onEliminar: () -> Unit
+) {
+    val hoy = LocalDate.now()
+    val venc = runCatching { Planner.vencimientoVigente(o, hoy) }.getOrNull()
+    val etiqueta = runCatching { Planner.etiquetaVigente(o, hoy) }.getOrNull()
+    val atendido = o.periodoDeclarado != null && o.periodoDeclarado == etiqueta
+    val fechaTxt = if (venc != null) runCatching { Planner.fmt(venc) }.getOrNull() ?: venc.toString() else ""
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        TextButton(onClick = onVolver) {
+            Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = ORO)
+            Spacer(Modifier.width(6.dp))
+            Text("Volver a la lista", color = ORO)
         }
+        Spacer(Modifier.height(4.dp))
+        Text(o.nombre.ifBlank { "(sin nombre)" }, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(2.dp))
+        Text(if (o.tipo == "GENERAL") "⭐ GENERAL" else "📅 MENSUAL SUNAT", color = ORO, fontSize = 13.sp)
+        if (o.detalle.isNotBlank()) {
+            Spacer(Modifier.height(6.dp))
+            Text(o.detalle, fontSize = 14.sp, color = Color(0xFFCFC8B8))
+        }
+        Spacer(Modifier.height(14.dp))
+
+        val parEstado: Pair<String, Color> = when {
+            atendido -> "AL DÍA — marcaste \"${o.periodoDeclarado}\" como declarado." to Color(0xFF66BB6A)
+            venc != null && hoy > venc -> {
+                val atraso = try { ChronoUnit.DAYS.between(venc, hoy) } catch (_: Exception) { 0L }
+                "VENCIDO hace $atraso día(s) — venció el $fechaTxt." to ROJO_SUAVE
+            }
+            venc != null && hoy == venc -> "¡VENCE HOY! ($fechaTxt)." to Color(0xFFFFB74D)
+            venc != null -> {
+                val faltan = try { ChronoUnit.DAYS.between(hoy, venc) } catch (_: Exception) { 0L }
+                "Vence el $fechaTxt (faltan $faltan día(s))." to Color(0xFFFFB74D)
+            }
+            else -> "Sin vencimiento aplicable ahora mismo." to Color(0xFF9E9E9E)
+        }
+        Surface(color = Color(0xFF241F16), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Text(
+                parEstado.first,
+                color = parEstado.second,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Te avisamos desde ${o.diasAviso} día(s) antes, con sonido, hasta que marques que ya lo hiciste.",
+            fontSize = 12.sp, color = Color(0xFF9C968A)
+        )
+        Spacer(Modifier.height(18.dp))
+
+        if (!atendido) {
+            Button(onClick = onDeclarar, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.Check, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(runCatching { Mensajes.accion(o) }.getOrNull() ?: "YA DECLARÉ ✓")
+            }
+        } else {
+            OutlinedButton(onClick = onDeshacer, modifier = Modifier.fillMaxWidth()) {
+                Text("Deshacer (volver a pendiente)")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onEditar, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Edit, contentDescription = null, tint = ORO)
+                Spacer(Modifier.width(4.dp))
+                Text("Editar")
+            }
+            OutlinedButton(onClick = onEliminar, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Delete, contentDescription = null, tint = ROJO_SUAVE)
+                Spacer(Modifier.width(4.dp))
+                Text("Eliminar", color = ROJO_SUAVE)
+            }
+        }
+        Spacer(Modifier.height(80.dp))
     }
 }
 
 @Composable
-fun DialogoDetalle(o: Obligacion, hoy: LocalDate,
-                   onDeclarar: () -> Unit, onDeshacer: () -> Unit,
-                   onEditar: () -> Unit, onEliminar: () -> Unit, onCerrar: () -> Unit) {
-    val esGeneral = o.tipo == "GENERAL"
-    val (color, textoEstado) = estadoTexto(o, hoy)
-    val venc = Planner.vencimientoVigente(o, hoy)
-    val atendido = Planner.estadoDe(o, hoy) is Planner.Estado.Atendido
+fun VistaAgregar(onNuevoSunat: () -> Unit, onNuevoGeneral: () -> Unit, onAjustes: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.height(10.dp))
+        Text("Elige el tipo de recordatorio", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(12.dp))
+
+        Surface(onClick = onNuevoSunat, color = Color(0xFF2B2312), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("📅 SUNAT", color = ORO, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Declaraciones mensuales (IGV, RENTA, etc.). Ingresa el cronograma del año: período → día de vencimiento.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8)
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Surface(onClick = onNuevoGeneral, color = Color(0xFF2B2312), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("⭐ GENERAL", color = ORO, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Fechas propias: cumpleaños, pagos de servicios, trámites, etc.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Text("Alarmas", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Cada tipo tiene su propio horario e intervalo de repicado.",
+            fontSize = 13.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick = onAjustes, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Settings, contentDescription = null, tint = ORO)
+            Spacer(Modifier.width(6.dp))
+            Text("Ajustes de alarma")
+        }
+        Spacer(Modifier.height(80.dp))
+    }
+}
+
+// ==================== PESTAÑA ACERCA DE ====================
+
+@Composable
+fun VistaAcerca(vista: String?, onVolver: () -> Unit, onAbrir: (String) -> Unit) {
+    when (vista) {
+        "DEV" -> PantallaDesarrollador(onVolver)
+        "VER" -> PantallaVersion(onVolver)
+        "POL" -> PantallaPrivacidad(onVolver)
+        else -> MenuAcerca(onAbrir)
+    }
+}
+
+@Composable
+fun MenuAcerca(onAbrir: (String) -> Unit) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.height(10.dp))
+        Text("Acerca de la aplicación", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(12.dp))
+
+        Surface(onClick = { onAbrir("DEV") }, color = Color(0xFF2B2312), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("🏗 INGES BUILDERS", color = ORO, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Quiénes desarrollan esta app: la empresa, sus servicios y el correo de contacto.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8)
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Surface(onClick = { onAbrir("VER") }, color = Color(0xFF2B2312), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("📌 Version", color = ORO, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Version 3.0 - 2026 — datos del autor y la empresa.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8)
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Surface(onClick = { onAbrir("POL") }, color = Color(0xFF2B2312), shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("🔒 Acerca de", color = ORO, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Política de Privacidad: cómo esta app guarda y protege tu información.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Text("RecordaSUNAT", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Text(
+            "Desarrollado por INGES BUILDERS SCRL. — Cajamarca, Perú",
+            fontSize = 12.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(80.dp))
+    }
+}
+
+@Composable
+fun PantallaDesarrollador(onVolver: () -> Unit) {
+    val ctx = LocalContext.current
+    var msgCorreo by remember { mutableStateOf<String?>(null) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        TextButton(onClick = onVolver) {
+            Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = ORO)
+            Spacer(Modifier.width(6.dp))
+            Text("Volver", color = ORO)
+        }
+        Text("Desarrollado por", fontSize = 13.sp, color = Color(0xFF9C968A))
+        Text("INGES BUILDERS", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Somos una empresa especializada en construcción, consultoría de obras y soluciones en estructuras metálicas. Nuestro equipo multidisciplinario de especialistas te acompaña desde el cálculo y diseño estructural hasta la fabricación y ejecución en campo, asegurando eficiencia y garantía en cada proyecto.",
+            fontSize = 14.sp, color = Color(0xFFE3DCCE), lineHeight = 20.sp
+        )
+        Spacer(Modifier.height(12.dp))
+        Surface(color = Color(0xFF241F16), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text("Especialidad principal", color = ORO, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Diseño, fabricación y montaje de estructuras metálicas (naves industriales, coberturas, puentes, edificaciones).",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8), lineHeight = 18.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("Servicios complementarios", color = ORO, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Ejecución de obras civiles, elaboración de expedientes técnicos y supervisión/consultoría de ingeniería.",
+                    fontSize = 13.sp, color = Color(0xFFCFC8B8), lineHeight = 18.sp
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Button(
+            onClick = {
+                try {
+                    ctx.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:ingesbuilders@gmail.com")))
+                    msgCorreo = null
+                } catch (_: Exception) {
+                    msgCorreo = "No encontré una app de correo instalada. Escríbenos a: ingesbuilders@gmail.com"
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Filled.Email, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Escribir al Correo")
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "ingesbuilders@gmail.com",
+            fontSize = 13.sp, color = ORO, textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        msgCorreo?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, color = ROJO_SUAVE, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(80.dp))
+    }
+}
+
+@Composable
+fun PantallaVersion(onVolver: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        TextButton(onClick = onVolver) {
+            Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = ORO)
+            Spacer(Modifier.width(6.dp))
+            Text("Volver", color = ORO)
+        }
+        Text("Version", fontSize = 13.sp, color = Color(0xFF9C968A))
+        Text("3.0 - 2026", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(16.dp))
+        Surface(color = Color(0xFF241F16), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LineaVersion("Version", "3.0 - 2026")
+                LineaVersion("Autor", "Hugo Cerquin M")
+                LineaVersion("Empresa", "INGES BUILDERS SCRL.")
+                LineaVersion("Ciudad", "CAJAMARCA, PERU")
+                LineaVersion("App", "RecordaSUNAT")
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "COPYRIGHT © 2026 — INGES BUILDERS SCRL. Todos los derechos reservados.",
+            fontSize = 12.sp, color = Color(0xFF9C968A), textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(80.dp))
+    }
+}
+
+@Composable
+fun LineaVersion(clave: String, valor: String) {
+    Row {
+        Text("$clave:", color = Color(0xFF9C968A), fontSize = 14.sp, modifier = Modifier.width(90.dp))
+        Text(valor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun PantallaPrivacidad(onVolver: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+        TextButton(onClick = onVolver) {
+            Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = ORO)
+            Spacer(Modifier.width(6.dp))
+            Text("Volver", color = ORO)
+        }
+        Text("Acerca de", fontSize = 13.sp, color = Color(0xFF9C968A))
+        Text("Política de Privacidad", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = ORO)
+        Spacer(Modifier.height(10.dp))
+        for ((titulo, cuerpo) in POLITICA) {
+            Surface(color = Color(0xFF241F16), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(titulo, color = ORO, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(cuerpo, fontSize = 13.sp, color = Color(0xFFCFC8B8), lineHeight = 19.sp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
+        Spacer(Modifier.height(70.dp))
+    }
+}
+
+@Composable
+fun DialogoEditor(
+    tipo: String,
+    inicial: Obligacion?,
+    nuevoId: Int,
+    onGuardar: (Obligacion) -> Unit,
+    onCerrar: () -> Unit
+) {
+    val esSunat = tipo != "GENERAL"
+    val clave = inicial?.id ?: -1
+    var nombre by remember(clave) { mutableStateOf(inicial?.nombre ?: "") }
+    var detalle by remember(clave) { mutableStateOf(inicial?.detalle ?: "") }
+    var avisoTxt by remember(clave) { mutableStateOf((inicial?.diasAviso ?: 5).toString()) }
+    val diasMes = remember(clave) {
+        mutableStateListOf<String>().apply {
+            for (m in 1..12) add(try { inicial?.vencimientos?.get(m)?.toString() ?: "" } catch (_: Exception) { "" })
+        }
+    }
+    var diaTxt by remember(clave) { mutableStateOf((inicial?.diaMes ?: 1).toString()) }
+    var mesTxt by remember(clave) { mutableStateOf((inicial?.mesAnual ?: 1).toString()) }
+    var repite by remember(clave) { mutableStateOf(inicial?.repetirAnual ?: true) }
+    var anioTxt by remember(clave) { mutableStateOf((inicial?.anioEspecifico ?: LocalDate.now().year).toString()) }
+    var error by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onCerrar,
-        title = { Text(o.nombre) },
+        title = { Text(if (inicial == null) "Nuevo ($tipo)" else "Editar: ${inicial.nombre.ifBlank { "(sin nombre)" }}") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(if (esGeneral) "⭐ GENERAL" else "📅 MENSUAL SUNAT",
-                    color = DORADO, style = MaterialTheme.typography.labelSmall)
-                if (o.detalle.isNotBlank())
-                    Text(o.detalle, style = MaterialTheme.typography.bodySmall)
+            Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 430.dp)) {
+                OutlinedTextField(
+                    value = nombre,
+                    onValueChange = { nombre = it },
+                    label = { Text("Nombre") },
+                    placeholder = { Text(if (esSunat) "ej: IGV MENSUAL, RENTA, ETC" else "ej: Cumpleaños, Pago de Servicios, etc") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Spacer(Modifier.height(8.dp))
-                Text(textoEstado, color = color, style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(8.dp))
-                if (venc != null)
-                    Text("Fecha de vencimiento vigente: ${Planner.fmt(venc)}",
-                        style = MaterialTheme.typography.bodySmall)
-                Text("Avisa ${o.diasAviso} día(s) antes",
-                    style = MaterialTheme.typography.bodySmall)
-                if (esGeneral && o.repetirAnual)
-                    Text("Se repite todos los años", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
-                if (atendido) {
-                    TextButton(onClick = onDeshacer, modifier = Modifier.fillMaxWidth()) {
-                        Text("Deshacer") }
-                } else if (venc != null) {
-                    Button(onClick = onDeclarar, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (esGeneral) "Ya lo hice" else "Ya declaré este mes") }
-                }
-                TextButton(onClick = onEditar, modifier = Modifier.fillMaxWidth()) {
-                    Text("✏️ Editar") }
-                TextButton(onClick = onEliminar, modifier = Modifier.fillMaxWidth()) {
-                    Text("🗑️ Eliminar", color = MaterialTheme.colorScheme.error) }
-            }
-        },
-        confirmButton = { TextButton(onClick = onCerrar) { Text("Cerrar") } })
-}
+                OutlinedTextField(
+                    value = detalle,
+                    onValueChange = { detalle = it },
+                    label = { Text("Detalle (opcional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
 
-@Composable
-fun VistaAgregar(onSunat: () -> Unit, onGeneral: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Button(onClick = onSunat, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-            Text("📅 Mensual tipo SUNAT", style = MaterialTheme.typography.titleMedium) }
-        Spacer(Modifier.height(8.dp))
-        Text("Cronograma por periodo (IGV, planillas, etc.). Avisa cada mes hasta que marques «Ya declaré».",
-            style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(28.dp))
-        Button(onClick = onGeneral, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-            Text("⭐ General", style = MaterialTheme.typography.titleMedium) }
-        Spacer(Modifier.height(8.dp))
-        Text("Cumpleaños, reuniones, pagos puntuales... por fecha, con repetición anual opcional. Mismo sistema de alertas.",
-            style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
-    }
-}
-
-@Composable
-fun DialogoEditor(tipo: String, inicial: Obligacion?, onGuardar: (Obligacion) -> Unit, onCancelar: () -> Unit) {
-    var nombre by remember { mutableStateOf(inicial?.nombre ?: "") }
-    var detalle by remember { mutableStateOf(inicial?.detalle ?: "") }
-    var diasAviso by remember { mutableStateOf((inicial?.diasAviso ?: 5).toString()) }
-    var error by remember { mutableStateOf(false) }
-    var dias by remember { mutableStateOf((1..12).associateWith { inicial?.vencimientos?.get(it)?.toString() ?: "" }) }
-    var diaMes by remember { mutableStateOf((inicial?.diaMes ?: 21).toString()) }
-    var mesAnual by remember { mutableStateOf((inicial?.mesAnual ?: 7).toString()) }
-    var repetir by remember { mutableStateOf(inicial?.repetirAnual ?: true) }
-    var anio by remember { mutableStateOf(inicial?.anioEspecifico?.toString() ?: LocalDate.now().year.toString()) }
-
-    AlertDialog(
-        onDismissRequest = onCancelar,
-        title = { Text(if (inicial == null)
-            if (tipo == "GENERAL") "Nuevo recordatorio general" else "Nueva obligación SUNAT"
-            else "Editar recordatorio") },
-        confirmButton = {
-            TextButton(onClick = {
-                if (tipo == "SUNAT") {
-                    val mapa = dias.mapNotNull { (mes, txt) ->
-                        txt.trim().toIntOrNull()?.let { mes to it.coerceIn(1, 31) }
-                    }.toMap()
-                    if (nombre.isNotBlank() && mapa.isNotEmpty())
-                        onGuardar(Obligacion(nombre = nombre.trim(), detalle = detalle.trim(), tipo = "SUNAT",
-                            vencimientos = mapa, diasAviso = diasAviso.trim().toIntOrNull()?.coerceIn(1, 30) ?: 5))
-                    else error = true
-                } else {
-                    val d = diaMes.trim().toIntOrNull()
-                    val m = mesAnual.trim().toIntOrNull()
-                    val a = if (repetir) LocalDate.now().year else anio.trim().toIntOrNull()
-                    if (nombre.isNotBlank() && d != null && d in 1..31 && m != null && m in 1..12 &&
-                        (repetir || (a != null && a >= 2000)))
-                        onGuardar(Obligacion(nombre = nombre.trim(), detalle = detalle.trim(), tipo = "GENERAL",
-                            diaMes = d, mesAnual = m, repetirAnual = repetir,
-                            anioEspecifico = if (repetir) null else a,
-                            diasAviso = diasAviso.trim().toIntOrNull()?.coerceIn(1, 30) ?: 5))
-                    else error = true
-                }
-            }) { Text("Guardar") }
-        },
-        dismissButton = { TextButton(onClick = onCancelar) { Text("Cancelar") } },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                if (error) Text("Revisa: nombre obligatorio y fechas válidas.",
-                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(nombre, { nombre = it },
-                    label = { Text(if (tipo == "SUNAT") "Nombre (ej: IGV MENSUAL, RENTA, etc.)"
-                                   else "Nombre (ej: Cumpleaños, Pago de Servicios, etc.)") },
-                    modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(detalle, { detalle = it },
-                    label = { Text("Detalle (opcional)") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(diasAviso, { diasAviso = it.filter { c -> c.isDigit() }.take(2) },
-                    label = { Text("¿Cuántos días antes empezar a avisar?") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                if (tipo == "SUNAT") {
-                    Text("Día de vencimiento por PERIODO (el vencimiento cae el mes siguiente; vacío = ese periodo no aplica):",
-                        style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(4.dp))
-                    MESES.chunked(3).forEachIndexed { i, fila ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            fila.forEachIndexed { j, mes ->
-                                val mesNum = i * 3 + j + 1
-                                OutlinedTextField(
-                                    value = dias[mesNum] ?: "",
-                                    onValueChange = { v -> dias = dias + (mesNum to v.filter { it.isDigit() }.take(2)) },
-                                    label = { Text(mes) },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f))
-                            }
-                            if (fila.size < 3) Spacer(Modifier.weight((3 - fila.size).toFloat()))
+                if (esSunat) {
+                    Text(
+                        "Cronograma del año: escribe el DÍA en que vences cada período. El período se declara el mes ANTERIOR (ej: AGO con 12 → vence el 12 de setiembre). Deja vacío lo que no aplique.",
+                        fontSize = 12.sp, color = Color(0xFF9C968A)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    for (m in 1..12) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                MESES_ANIO[m - 1],
+                                fontSize = 13.sp, fontWeight = FontWeight.Bold, color = ORO,
+                                modifier = Modifier.width(44.dp)
+                            )
+                            OutlinedTextField(
+                                value = diasMes[m - 1],
+                                onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diasMes[m - 1] = v },
+                                placeholder = { Text("—", color = Color(0xFF6B665C)) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    TextButton(onClick = { (1..12).forEach { m -> dias = dias + (m to "12") } }) {
-                        Text("Cargar plantilla IGV (día 12) — ajusta a tu dígito RUC") }
-                    Text("⚠ El cronograma oficial de SUNAT cambia cada año y según el último dígito del RUC. Verifícalo.",
-                        style = MaterialTheme.typography.bodySmall)
                 } else {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(diaMes, { diaMes = it.filter { c -> c.isDigit() }.take(2) },
-                            label = { Text("Día") },
+                        OutlinedTextField(
+                            value = diaTxt,
+                            onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) diaTxt = v },
+                            label = { Text("Día") }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f))
-                        OutlinedTextField(mesAnual, { mesAnual = it.filter { c -> c.isDigit() }.take(2) },
-                            label = { Text("Mes (1-12)") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = mesTxt,
+                            onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) mesTxt = v },
+                            label = { Text("Mes (1-12)") }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f))
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = repetir, onCheckedChange = { repetir = it })
-                        Text("Se repite todos los años (cumpleaños)")
+                        Checkbox(checked = repite, onCheckedChange = { repite = it })
+                        Text("Se repite cada año", fontSize = 14.sp)
                     }
-                    if (!repetir) {
-                        OutlinedTextField(anio, { anio = it.filter { c -> c.isDigit() }.take(4) },
-                            label = { Text("Año (ej. 2026)") },
+                    if (!repite) {
+                        OutlinedTextField(
+                            value = anioTxt,
+                            onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) anioTxt = v },
+                            label = { Text("Año (ej: 2026)") }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth())
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
-            }
-        })
-}
 
-@Composable
-fun DialogoConfig(onCerrar: () -> Unit) {
-    val context = LocalContext.current
-    val actual = Config.cargar(context)
-    var inicio by remember { mutableStateOf("%02d:%02d".format(actual.inicio.hour, actual.inicio.minute)) }
-    var fin by remember { mutableStateOf("%02d:%02d".format(actual.fin.hour, actual.fin.minute)) }
-    var interS by remember { mutableStateOf(actual.intervaloSunat.toString()) }
-    var interG by remember { mutableStateOf(actual.intervaloGeneral.toString()) }
-
-    AlertDialog(
-        onDismissRequest = onCerrar,
-        title = { Text("Ajustes de alertas sonoras") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("Horario en el que pueden sonar las alertas (común para ambos tipos):",
-                    style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(inicio, { inicio = it }, label = { Text("Inicio (HH:MM)") },
-                        singleLine = true, modifier = Modifier.weight(1f))
-                    OutlinedTextField(fin, { fin = it }, label = { Text("Fin (HH:MM)") },
-                        singleLine = true, modifier = Modifier.weight(1f))
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = avisoTxt,
+                    onValueChange = { v -> if (v.length <= 2 && v.all { it.isDigit() }) avisoTxt = v },
+                    label = { Text("Avisar con (días de anticipación)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
                 }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(interS, { interS = it.filter { c -> c.isDigit() }.take(4) },
-                        label = { Text("Cada (min) SUNAT") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f))
-                    OutlinedTextField(interG, { interG = it.filter { c -> c.isDigit() }.take(4) },
-                        label = { Text("Cada (min) GENERAL") }, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f))
-                }
-                Spacer(Modifier.height(4.dp))
-                Text("Mínimo 15 minutos. El sonido usa el VOLUMEN DE ALARMA del teléfono. Verás un relojito en la barra: indica alertas programadas.",
-                    style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
-                Text("Robustez (importante en Xiaomi, Samsung, Huawei):",
-                    style = MaterialTheme.typography.labelSmall, color = DORADO)
-                TextButton(onClick = {
-                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                }) { Text("🔋 Quitar optimización de batería") }
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                Config.guardar(context, inicio, fin,
-                    interS.trim().toIntOrNull() ?: 120,
-                    interG.trim().toIntOrNull() ?: 120)
-                AlertScheduler.programarTodo(context)
+            Button(onClick = {
+                val nom = nombre.trim()
+                if (nom.isEmpty()) {
+                    error = "Ponle un nombre al recordatorio."
+                    return@Button
+                }
+                val aviso = avisoTxt.trim().toIntOrNull()?.coerceIn(1, 30) ?: 5
+                var ven: Map<Int, Int> = emptyMap()
+                var dia = 0; var mes = 0
+                var anio: Int? = null
+                var repiteAnual = false
+                if (esSunat) {
+                    val mapa = linkedMapOf<Int, Int>()
+                    for (m in 1..12) {
+                        val d = diasMes[m - 1].trim().toIntOrNull()
+                        if (d != null && d in 1..31) mapa[m] = d
+                    }
+                    ven = mapa
+                } else {
+                    dia = (diaTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 31)
+                    mes = (mesTxt.trim().toIntOrNull() ?: 0).coerceIn(1, 12)
+                    repiteAnual = repite
+                    if (!repite) anio = anioTxt.trim().toIntOrNull()
+                    if (diaTxt.trim().isEmpty() || mesTxt.trim().isEmpty()) {
+                        error = "Revisa el día y el mes."
+                        return@Button
+                    }
+                }
+                val obj = Obligacion(
+                    id = inicial?.id ?: nuevoId,
+                    nombre = nom,
+                    detalle = detalle.trim(),
+                    tipo = tipo,
+                    vencimientos = ven,
+                    diaMes = dia,
+                    mesAnual = mes,
+                    repetirAnual = repiteAnual,
+                    anioEspecifico = anio,
+                    diasAviso = aviso,
+                    periodoDeclarado = inicial?.periodoDeclarado
+                )
+                onGuardar(obj)
                 onCerrar()
             }) { Text("Guardar") }
         },
-        dismissButton = { TextButton(onClick = onCerrar) { Text("Cancelar") } })
+        dismissButton = { TextButton(onClick = onCerrar) { Text("Cancelar") } }
+    )
 }
+
+@Composable
+fun DialogoConfig(tipo: String, onCerrar: () -> Unit) {
+    val ctx = LocalContext.current
+    val actuales = remember(tipo) { Config.ajustes(ctx, tipo) }
+    var iniTxt by remember { mutableStateOf(actuales.inicio.toString()) }
+    var finTxt by remember { mutableStateOf(actuales.fin.toString()) }
+    var itvTxt by remember { mutableStateOf(actuales.intervaloMin.toString()) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onCerrar,
+        title = { Text("Alarma — $tipo") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()).heightIn(max = 380.dp)) {
+                Text(
+                    "Mientras haya algo pendiente, la alarma SUENA cada cierto tiempo entre estas horas. Cambias solo el bloque de $tipo; el otro tipo conserva lo suyo.",
+                    fontSize = 12.sp, color = Color(0xFF9C968A)
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = iniTxt, onValueChange = { iniTxt = it },
+                    label = { Text("Hora de inicio (ej: 08:00)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = finTxt, onValueChange = { finTxt = it },
+                    label = { Text("Hora de fin (ej: 22:00)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = itvTxt,
+                    onValueChange = { v -> if (v.length <= 4 && v.all { it.isDigit() }) itvTxt = v },
+                    label = { Text("Intervalo en minutos (ej: 30 o 120)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Mínimo 15 minutos. Ahora funciona con cualquier intervalo, también de 1 hora o más.",
+                    fontSize = 12.sp, color = Color(0xFF9C968A)
+                )
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, color = ROJO_SUAVE, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            ctx.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${ctx.packageName}")))
+                        } else {
+                            error = "Tu Android ya permite alarmas exactas."
+                        }
+                    } catch (_: Exception) { error = "No se pudo abrir el ajuste." }
+                }) { Text("Permitir alarmas exactas (recomendado)") }
+                TextButton(onClick = {
+                    try { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    catch (_: Exception) { error = "No se pudo abrir el ajuste." }
+                }) { Text("Quitar optimización de batería") }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val ini = validarHora(iniTxt)
+                val fin = validarHora(finTxt)
+                val itv = itvTxt.trim().toIntOrNull()?.coerceIn(15, 1440)
+                if (ini == null || fin == null || itv == null) {
+                    error = "Revisa las horas (ej: 08:00) y el intervalo (número de minutos)."
+                    return@Button
+                }
+                Config.guardar(ctx, tipo, Config.Ajustes(ini, fin, itv))
+                AlertScheduler.programarSiguiente(ctx, tipo)
+                onCerrar()
+            }) { Text("Guardar") }
+        },
+        dismissButton = { TextButton(onClick = onCerrar) { Text("Cancelar") } }
+    )
+}
+
+private fun validarHora(s: String): LocalTime? = try {
+    val p = s.trim().split(":")
+    if (p.size > 2) null
+    else {
+        val h = p[0].trim().toIntOrNull() ?: return null
+        val m = if (p.size == 2) (p[1].trim().toIntOrNull() ?: return null) else 0
+        LocalTime.of(h.coerceIn(0, 23), m.coerceIn(0, 59))
+    }
+} catch (_: Exception) { null }
