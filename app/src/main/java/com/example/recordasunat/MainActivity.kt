@@ -70,6 +70,7 @@ import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,12 +99,51 @@ fun TemaInges(contenido: @Composable () -> Unit) {
     )
 }
 
+fun textoBonitoEtiqueta(nombre: String?): String {
+    return when (nombre?.uppercase() ?: "") {
+        "SUNAT" -> "SUNAT"
+        "SERVICIOS" -> "SERVICIOS"
+        "FINANZAS" -> "FINANZAS"
+        "HOGAR" -> "HOGAR"
+        "TRABAJO" -> "TRABAJO"
+        else -> if (nombre.isNullOrBlank()) "OTROS" else nombre
+    }
+}
+
+fun colorDeEtiqueta(nombre: String?): Color = when (nombre?.uppercase() ?: "") {
+    "SUNAT" -> Color(0xFFE53935)
+    "SERVICIOS" -> Color(0xFF29B6F6)
+    "FINANZAS" -> Color(0xFF66BB6A)
+    "HOGAR" -> Color(0xFFFFB74D)
+    "TRABAJO" -> Color(0xFFAB47BC)
+    else -> Color(0xFF90A4AE)
+}
+
+fun textoBonitoTipo(nombre: String?): String {
+    return when (nombre?.uppercase() ?: "") {
+        "CUMPLEANOS" -> "CUMPLEAÑOS"
+        "ANIVERSARIO" -> "ANIVERSARIO"
+        else -> if (nombre.isNullOrBlank()) "OTRO" else nombre
+    }
+}
+
+fun colorDeTipo(nombre: String?): Color = when (nombre?.uppercase() ?: "") {
+    "CUMPLEANOS" -> Color(0xFFF06292)
+    "ANIVERSARIO" -> Color(0xFFFFB300)
+    else -> Color(0xFF90A4AE)
+}
+
+fun textoDeMonto(item: ItemRecordatorio?): String {
+    val m = item?.monto ?: 0.0
+    return if (m != 0.0) String.format(Locale.US, "%.2f", m) else ""
+}
+
 @Composable
 fun PantallaPrincipal() {
     val context = LocalContext.current
     var lista by remember { mutableStateOf<List<ItemRecordatorio>>(emptyList()) }
     var indicePestana by remember { mutableStateOf(0) }
-    var dialogoGrupo by remember { mutableStateOf<Grupo?>(null) }
+    var dialogoGrupo by remember { mutableStateOf<String?>(null) }
     var itemEditar by remember { mutableStateOf<ItemRecordatorio?>(null) }
     var itemBorrar by remember { mutableStateOf<ItemRecordatorio?>(null) }
 
@@ -166,10 +206,10 @@ fun PantallaPrincipal() {
                 ExtendedFloatingActionButton(
                     onClick = {
                         dialogoGrupo = when (indicePestana) {
-                            0 -> Grupo.MENSUAL
-                            1 -> Grupo.ANIVERSARIOS
-                            2 -> Grupo.ANUAL
-                            else -> Grupo.GENERAL
+                            0 -> Grupo.MENSUAL.name
+                            1 -> Grupo.ANIVERSARIOS.name
+                            2 -> Grupo.ANUAL.name
+                            else -> Grupo.GENERAL.name
                         }
                     },
                     icon = { Icon(Icons.Filled.Add, contentDescription = null) },
@@ -213,7 +253,7 @@ fun PantallaPrincipal() {
                     2 -> Grupo.ANUAL
                     else -> Grupo.GENERAL
                 }
-                val itemsPestana = lista.filter { it.grupo == grupoActual }
+                val itemsPestana = lista.filter { it.grupo.equals(grupoActual.name, ignoreCase = true) }
                 Column {
                     if (grupoActual == Grupo.ANIVERSARIOS) {
                         Row(
@@ -257,7 +297,7 @@ fun PantallaPrincipal() {
 
     if (dialogoGrupo != null) {
         DialogoFormulario(
-            grupo = dialogoGrupo!!,
+            grupoNombre = dialogoGrupo!!,
             item = null,
             onGuardar = { nuevo ->
                 val actual = DatosApp.cargar(context).toMutableList()
@@ -273,7 +313,7 @@ fun PantallaPrincipal() {
 
     if (itemEditar != null) {
         DialogoFormulario(
-            grupo = itemEditar!!.grupo,
+            grupoNombre = itemEditar!!.grupo,
             item = itemEditar,
             onGuardar = { actualizado ->
                 val actual = DatosApp.cargar(context).toMutableList()
@@ -328,21 +368,6 @@ fun textoVacio(indice: Int): String = when (indice) {
     1 -> "Aún no hay ANIVERSARIOS. Toca AGREGAR ANIVERSARIO para poner cumpleaños y aniversarios (te avisamos 7 días antes)."
     2 -> "Aún no hay recordatorios ANUALES. Toca AGREGAR ANUAL para la DJ de renta, predial, SOAT, revisión técnica, etc."
     else -> "Aún no hay recordatorios de fecha puntual. Toca AGREGAR GENERAL para reuniones, citas y trámites con día y hora."
-}
-
-fun colorEtiqueta(e: EtiquetaMensual): Color = when (e) {
-    EtiquetaMensual.SUNAT -> Color(0xFFE53935)
-    EtiquetaMensual.SERVICIOS -> Color(0xFF29B6F6)
-    EtiquetaMensual.FINANZAS -> Color(0xFF66BB6A)
-    EtiquetaMensual.HOGAR -> Color(0xFFFFB74D)
-    EtiquetaMensual.TRABAJO -> Color(0xFFAB47BC)
-    EtiquetaMensual.OTROS -> Color(0xFF90A4AE)
-}
-
-fun colorTipo(t: TipoAniversario): Color = when (t) {
-    TipoAniversario.CUMPLEANOS -> Color(0xFFF06292)
-    TipoAniversario.ANIVERSARIO -> Color(0xFFFFB300)
-    TipoAniversario.OTRO -> Color(0xFF90A4AE)
 }
 
 @Composable
@@ -439,20 +464,30 @@ fun TarjetaRecordatorio(
     onBorrar: () -> Unit,
     onConfirmar: () -> Unit
 ) {
+    val ahora = LocalDateTime.now()
     val vencimiento = DatosApp.vencimientoDe(item)
-    val confirmado = DatosApp.yaConfirmado(item, vencimiento)
-    val dias = Duration.between(LocalDateTime.now(), vencimiento).toDays()
+    val confirmado = vencimiento != null && DatosApp.yaConfirmado(item, vencimiento)
 
-    val textoEstado = when {
-        confirmado -> "CONFIRMADO ESTE CICLO"
-        dias < 0 -> "VENCIDO"
-        dias == 0L -> "VENCE HOY"
-        else -> "Vence en $dias días"
-    }
-    val colorEstado = when {
-        confirmado -> Color(0xFF66BB6A)
-        dias < 0 -> Color(0xFFEF5350)
-        else -> Color(0xFFFFB300)
+    val textoEstado: String
+    val colorEstado: Color
+    if (confirmado) {
+        textoEstado = "CONFIRMADO ESTE CICLO"
+        colorEstado = Color(0xFF66BB6A)
+    } else if (vencimiento == null) {
+        textoEstado = "PENDIENTE"
+        colorEstado = Color(0xFFFFB300)
+    } else {
+        val dias = Duration.between(ahora, vencimiento).toDays()
+        if (dias < 0) {
+            textoEstado = "VENCIDO"
+            colorEstado = Color(0xFFEF5350)
+        } else if (dias == 0L) {
+            textoEstado = "VENCE HOY"
+            colorEstado = Color(0xFFFFB300)
+        } else {
+            textoEstado = "Vence en $dias días"
+            colorEstado = Color(0xFF4FC3F7)
+        }
     }
 
     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1F26)), modifier = Modifier.fillMaxWidth()) {
@@ -462,15 +497,17 @@ fun TarjetaRecordatorio(
                 TextButton(onClick = onEditar) { Text("EDITAR", color = Color(0xFF4FC3F7), fontSize = 12.sp, fontWeight = FontWeight.Bold) }
                 TextButton(onClick = onBorrar) { Text("BORRAR", color = Color(0xFFEF5350), fontSize = 12.sp, fontWeight = FontWeight.Bold) }
             }
-            if (item.grupo == Grupo.MENSUAL) {
-                ChipColor(texto = item.etiqueta?.texto ?: "OTROS", fondo = colorEtiqueta(item.etiqueta ?: EtiquetaMensual.OTROS))
+            if (item.grupo.equals(Grupo.MENSUAL.name, ignoreCase = true)) {
+                ChipColor(texto = textoBonitoEtiqueta(item.etiqueta), fondo = colorDeEtiqueta(item.etiqueta))
             }
-            if (item.grupo == Grupo.ANIVERSARIOS) {
-                ChipColor(texto = item.tipoAniversario?.texto ?: "OTRO", fondo = colorTipo(item.tipoAniversario ?: TipoAniversario.OTRO))
+            if (item.grupo.equals(Grupo.ANIVERSARIOS.name, ignoreCase = true)) {
+                ChipColor(texto = textoBonitoTipo(item.tipoAniversario), fondo = colorDeTipo(item.tipoAniversario))
             }
             Text(DatosApp.descripcionVencimiento(item), color = Color(0xFFC9CDD6), fontSize = 13.sp)
             Text(textoEstado, color = colorEstado, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            if (!item.monto.isNullOrEmpty()) Text("Monto: ${item.monto}", color = Color(0xFFC9CDD6), fontSize = 13.sp)
+            if (item.monto != null && item.monto != 0.0) {
+                Text("Monto: " + String.format(Locale.US, "S/ %.2f", item.monto), color = Color(0xFFC9CDD6), fontSize = 13.sp)
+            }
             if (!item.nota.isNullOrEmpty()) Text(item.nota, color = Color(0xFF9AA0B0), fontSize = 13.sp)
             if (!confirmado) {
                 Button(
@@ -489,21 +526,25 @@ fun TarjetaRecordatorio(
 
 @Composable
 fun DialogoFormulario(
-    grupo: Grupo,
+    grupoNombre: String,
     item: ItemRecordatorio?,
     onGuardar: (ItemRecordatorio) -> Unit,
     onCerrar: () -> Unit
 ) {
     val esEdicion = item != null
+    val esMensual = grupoNombre.equals(Grupo.MENSUAL.name, ignoreCase = true)
+    val esAniversarios = grupoNombre.equals(Grupo.ANIVERSARIOS.name, ignoreCase = true)
+    val esAnual = grupoNombre.equals(Grupo.ANUAL.name, ignoreCase = true)
+    val esGeneral = grupoNombre.equals(Grupo.GENERAL.name, ignoreCase = true)
 
     var titulo by remember { mutableStateOf(item?.titulo ?: "") }
-    var etiquetaSel by remember { mutableStateOf(item?.etiqueta ?: EtiquetaMensual.SUNAT) }
-    var tipoSel by remember { mutableStateOf(item?.tipoAniversario ?: TipoAniversario.CUMPLEANOS) }
+    var etiquetaSel by remember { mutableStateOf((item?.etiqueta ?: EtiquetaMensual.SUNAT.name).uppercase()) }
+    var tipoSel by remember { mutableStateOf((item?.tipoAniversario ?: TipoAniversario.CUMPLEANOS.name).uppercase().replace("Ñ", "N")) }
     var diaTexto by remember { mutableStateOf(item?.diaMes?.toString() ?: "15") }
     var mesIndice by remember { mutableStateOf(((item?.mes ?: 1) - 1).coerceIn(0, 11)) }
     var fechaTexto by remember { mutableStateOf(item?.fechaGeneral ?: "") }
     var horaTexto by remember { mutableStateOf(item?.horaGeneral ?: "08:00") }
-    var montoTexto by remember { mutableStateOf(item?.monto ?: "") }
+    var montoTexto by remember { mutableStateOf(textoDeMonto(item)) }
     var notaTexto by remember { mutableStateOf(item?.nota ?: "") }
     var mensajeError by remember { mutableStateOf("") }
 
@@ -512,7 +553,7 @@ fun DialogoFormulario(
         containerColor = Color(0xFF1C1F26),
         titleContentColor = Color.White,
         textContentColor = Color(0xFFDDDFE5),
-        title = { Text(if (esEdicion) "EDITAR ${grupo.titulo}" else "AGREGAR ${grupo.titulo}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+        title = { Text(if (esEdicion) "EDITAR ${grupoNombre.uppercase()}" else "AGREGAR ${grupoNombre.uppercase()}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 Modifier.verticalScroll(rememberScrollState()).heightIn(max = 400.dp),
@@ -524,32 +565,32 @@ fun DialogoFormulario(
 
                 CampoTexto(titulo, { titulo = it }, "Título", apoyo = "Ej: IGV - PDT 621")
 
-                if (grupo == Grupo.MENSUAL) {
+                if (esMensual) {
                     Text("Etiqueta:", color = Color(0xFF9AA0B0), fontSize = 12.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ChipSelector("SUNAT", colorEtiqueta(EtiquetaMensual.SUNAT), etiquetaSel == EtiquetaMensual.SUNAT) { etiquetaSel = EtiquetaMensual.SUNAT }
-                        ChipSelector("SERVICIOS", colorEtiqueta(EtiquetaMensual.SERVICIOS), etiquetaSel == EtiquetaMensual.SERVICIOS) { etiquetaSel = EtiquetaMensual.SERVICIOS }
-                        ChipSelector("FINANZAS", colorEtiqueta(EtiquetaMensual.FINANZAS), etiquetaSel == EtiquetaMensual.FINANZAS) { etiquetaSel = EtiquetaMensual.FINANZAS }
+                        ChipSelector("SUNAT", colorDeEtiqueta("SUNAT"), etiquetaSel == EtiquetaMensual.SUNAT.name) { etiquetaSel = EtiquetaMensual.SUNAT.name }
+                        ChipSelector("SERVICIOS", colorDeEtiqueta("SERVICIOS"), etiquetaSel == EtiquetaMensual.SERVICIOS.name) { etiquetaSel = EtiquetaMensual.SERVICIOS.name }
+                        ChipSelector("FINANZAS", colorDeEtiqueta("FINANZAS"), etiquetaSel == EtiquetaMensual.FINANZAS.name) { etiquetaSel = EtiquetaMensual.FINANZAS.name }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ChipSelector("HOGAR", colorEtiqueta(EtiquetaMensual.HOGAR), etiquetaSel == EtiquetaMensual.HOGAR) { etiquetaSel = EtiquetaMensual.HOGAR }
-                        ChipSelector("TRABAJO", colorEtiqueta(EtiquetaMensual.TRABAJO), etiquetaSel == EtiquetaMensual.TRABAJO) { etiquetaSel = EtiquetaMensual.TRABAJO }
-                        ChipSelector("OTROS", colorEtiqueta(EtiquetaMensual.OTROS), etiquetaSel == EtiquetaMensual.OTROS) { etiquetaSel = EtiquetaMensual.OTROS }
+                        ChipSelector("HOGAR", colorDeEtiqueta("HOGAR"), etiquetaSel == EtiquetaMensual.HOGAR.name) { etiquetaSel = EtiquetaMensual.HOGAR.name }
+                        ChipSelector("TRABAJO", colorDeEtiqueta("TRABAJO"), etiquetaSel == EtiquetaMensual.TRABAJO.name) { etiquetaSel = EtiquetaMensual.TRABAJO.name }
+                        ChipSelector("OTROS", colorDeEtiqueta("OTROS"), etiquetaSel == EtiquetaMensual.OTROS.name) { etiquetaSel = EtiquetaMensual.OTROS.name }
                     }
                 }
 
-                if (grupo == Grupo.ANIVERSARIOS) {
+                if (esAniversarios) {
                     Text("Tipo:", color = Color(0xFF9AA0B0), fontSize = 12.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ChipSelector("CUMPLEAÑOS", colorTipo(TipoAniversario.CUMPLEANOS), tipoSel == TipoAniversario.CUMPLEANOS) { tipoSel = TipoAniversario.CUMPLEANOS }
-                        ChipSelector("ANIVERSARIO", colorTipo(TipoAniversario.ANIVERSARIO), tipoSel == TipoAniversario.ANIVERSARIO) { tipoSel = TipoAniversario.ANIVERSARIO }
-                        ChipSelector("OTRO", colorTipo(TipoAniversario.OTRO), tipoSel == TipoAniversario.OTRO) { tipoSel = TipoAniversario.OTRO }
+                        ChipSelector("CUMPLEAÑOS", colorDeTipo("CUMPLEANOS"), tipoSel == TipoAniversario.CUMPLEANOS.name) { tipoSel = TipoAniversario.CUMPLEANOS.name }
+                        ChipSelector("ANIVERSARIO", colorDeTipo("ANIVERSARIO"), tipoSel == TipoAniversario.ANIVERSARIO.name) { tipoSel = TipoAniversario.ANIVERSARIO.name }
+                        ChipSelector("OTRO", colorDeTipo("OTRO"), tipoSel == TipoAniversario.OTRO.name) { tipoSel = TipoAniversario.OTRO.name }
                     }
                 }
 
-                if (grupo == Grupo.MENSUAL || grupo == Grupo.ANIVERSARIOS || grupo == Grupo.ANUAL) {
+                if (esMensual || esAniversarios || esAnual) {
                     CampoTexto(diaTexto, { diaTexto = it }, "Día del mes (1 a 31)", numero = true)
-                    if (grupo != Grupo.MENSUAL) {
+                    if (!esMensual) {
                         Text("Mes:", color = Color(0xFF9AA0B0), fontSize = 12.sp)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -567,11 +608,11 @@ fun DialogoFormulario(
                     }
                 }
 
-                if (grupo == Grupo.MENSUAL) {
-                    CampoTexto(montoTexto, { montoTexto = it }, "Monto (opcional)", apoyo = "Ej: S/ 550.00")
+                if (esMensual) {
+                    CampoTexto(montoTexto, { montoTexto = it }, "Monto en soles (opcional)", apoyo = "Ej: 550.00")
                 }
 
-                if (grupo == Grupo.GENERAL) {
+                if (esGeneral) {
                     CampoTexto(fechaTexto, { fechaTexto = it }, "Fecha", apoyo = "Ej: 15/03/2026")
                     CampoTexto(horaTexto, { horaTexto = it }, "Hora del aviso", apoyo = "Ej: 09:30")
                 }
@@ -585,12 +626,12 @@ fun DialogoFormulario(
                     val tituloLimpio = titulo.trim()
                     if (tituloLimpio.isNotEmpty()) {
                         val dia = diaTexto.trim().toIntOrNull()
-                        if (grupo != Grupo.GENERAL && (dia == null || dia < 1 || dia > 31)) {
+                        if (!esGeneral && (dia == null || dia < 1 || dia > 31)) {
                             mensajeError = "El día debe ser un número de 1 a 31."
                         } else {
                             var fechaISO = ""
                             var fechaOk = true
-                            if (grupo == Grupo.GENERAL) {
+                            if (esGeneral) {
                                 val p = fechaTexto.trim().split("/")
                                 if (p.size == 3) {
                                     var anio = p[2].trim().toIntOrNull() ?: -1
@@ -612,7 +653,7 @@ fun DialogoFormulario(
                             if (fechaOk) {
                                 var horaFinal = "08:00"
                                 var horaOk = true
-                                if (grupo == Grupo.GENERAL && horaTexto.trim().isNotEmpty()) {
+                                if (esGeneral && horaTexto.trim().isNotEmpty()) {
                                     val hp = horaTexto.trim().split(":")
                                     val h = try {
                                         LocalTime.of(hp[0].trim().toIntOrNull() ?: -1, (hp.getOrNull(1) ?: "0").trim().toIntOrNull() ?: -1)
@@ -625,31 +666,32 @@ fun DialogoFormulario(
                                     }
                                 }
                                 if (horaOk) {
+                                    val montoNumero = montoTexto.trim().replace(",", ".").toDoubleOrNull() ?: 0.0
                                     val nuevo = if (item != null) {
                                         item.copy(
                                             titulo = tituloLimpio,
-                                            etiqueta = if (grupo == Grupo.MENSUAL) etiquetaSel else EtiquetaMensual.OTROS,
-                                            diaMes = if (grupo == Grupo.GENERAL) 1 else dia!!,
-                                            mes = if (grupo == Grupo.GENERAL) 1 else mesIndice + 1,
-                                            fechaGeneral = if (grupo == Grupo.GENERAL) fechaISO else "",
-                                            horaGeneral = if (grupo == Grupo.GENERAL) horaFinal else "",
-                                            tipoAniversario = if (grupo == Grupo.ANIVERSARIOS) tipoSel else TipoAniversario.OTRO,
-                                            monto = if (grupo == Grupo.MENSUAL) montoTexto.trim() else "",
+                                            etiqueta = if (esMensual) etiquetaSel else EtiquetaMensual.OTROS.name,
+                                            diaMes = if (esGeneral) 1 else dia!!,
+                                            mes = if (esGeneral) 1 else mesIndice + 1,
+                                            fechaGeneral = if (esGeneral) fechaISO else "",
+                                            horaGeneral = if (esGeneral) horaFinal else "",
+                                            tipoAniversario = if (esAniversarios) tipoSel else TipoAniversario.OTRO.name,
+                                            monto = if (esMensual) montoNumero else 0.0,
                                             nota = notaTexto.trim(),
                                             cicloConfirmado = ""
                                         )
                                     } else {
                                         ItemRecordatorio(
-                                            id = System.currentTimeMillis(),
-                                            grupo = grupo,
+                                            id = System.currentTimeMillis().toString(),
+                                            grupo = grupoNombre,
                                             titulo = tituloLimpio,
-                                            etiqueta = if (grupo == Grupo.MENSUAL) etiquetaSel else EtiquetaMensual.OTROS,
-                                            diaMes = if (grupo == Grupo.GENERAL) 1 else dia!!,
-                                            mes = if (grupo == Grupo.GENERAL) 1 else mesIndice + 1,
-                                            fechaGeneral = if (grupo == Grupo.GENERAL) fechaISO else "",
-                                            horaGeneral = if (grupo == Grupo.GENERAL) horaFinal else "",
-                                            tipoAniversario = if (grupo == Grupo.ANIVERSARIOS) tipoSel else TipoAniversario.OTRO,
-                                            monto = if (grupo == Grupo.MENSUAL) montoTexto.trim() else "",
+                                            etiqueta = if (esMensual) etiquetaSel else EtiquetaMensual.OTROS.name,
+                                            diaMes = if (esGeneral) 1 else dia!!,
+                                            mes = if (esGeneral) 1 else mesIndice + 1,
+                                            fechaGeneral = if (esGeneral) fechaISO else "",
+                                            horaGeneral = if (esGeneral) horaFinal else "",
+                                            tipoAniversario = if (esAniversarios) tipoSel else TipoAniversario.OTRO.name,
+                                            monto = if (esMensual) montoNumero else 0.0,
                                             nota = notaTexto.trim(),
                                             activo = true,
                                             cicloConfirmado = ""
