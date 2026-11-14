@@ -15,7 +15,14 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /* ============================================================
-   MODELOS Y DATOS - INGES BUILDERS RECORDATORIOS PRO v4.0
+   MODELOS Y DATOS - INGES BUILDERS RECORDATORIOS PRO v4.2
+   Novedades:
+   - diasMes: cronograma propio por mes para MENSUAL (estilo SUNAT).
+     "" = usar diaMes en todos los meses (compatible con datos viejos).
+   - horaDe: la hora de alarma guardada en cada recordatorio ya
+     funciona en las 4 pestañas (antes solo en GENERAL).
+   - importarAniversarios ya no agrega duplicados y reporta
+     cuántos omitió.
    ============================================================ */
 
 enum class Grupo(val titulo: String) {
@@ -40,6 +47,8 @@ enum class TipoAniversario(val texto: String) {
     OTRO("OTRO")
 }
 
+data class ResultadoImportacion(val agregados: Int, val omitidos: Int)
+
 data class ItemRecordatorio(
     val id: String = UUID.randomUUID().toString(),
     val grupo: String = Grupo.MENSUAL.name,
@@ -47,6 +56,7 @@ data class ItemRecordatorio(
     val etiqueta: String = EtiquetaMensual.OTROS.name,
     val diaMes: Int = 1,
     val mes: Int = 1,
+    val diasMes: String = "",
     val fechaGeneral: String = "",
     val horaGeneral: String = "08:00",
     val tipoAniversario: String = TipoAniversario.CUMPLEANOS.name,
@@ -96,22 +106,47 @@ object DatosApp {
         return LocalDate.of(anio, mes, dia.coerceIn(1, ultimoDia))
     }
 
-    // Vencimiento del ciclo ACTUAL (puede estar en el pasado si no confirmó)
+    // Hora de alarma guardada en el recordatorio (si está mala o vacía: 08:00)
+    fun horaDe(item: ItemRecordatorio): LocalTime {
+        return try {
+            val partes = item.horaGeneral.trim().split(":")
+            LocalTime.of(
+                (partes.getOrNull(0)?.trim()?.toIntOrNull() ?: 8).coerceIn(0, 23),
+                (partes.getOrNull(1)?.trim()?.toIntOrNull() ?: 0).coerceIn(0, 59)
+            )
+        } catch (e: Exception) {
+            HORA_ALARMA
+        }
+    }
+
+    // Días por mes de un MENSUAL: 12 valores (0 = ese mes no aplica).
+    // Si diasMes está vacío (datos viejos), se usa diaMes en todos los meses.
+    fun diasPorMesDe(item: ItemRecordatorio): List<Int> {
+        val texto = item.diasMes.trim()
+        if (texto.isNotEmpty()) {
+            val partes = texto.split(",")
+            if (partes.size == 12) {
+                return partes.map { (it.trim().toIntOrNull() ?: 0).coerceIn(0, 31) }
+            }
+        }
+        return List(12) { item.diaMes.coerceIn(1, 31) }
+    }
+
+    // Vencimiento del ciclo ACTUAL (puede estar en el pasado si no confirmó).
+    // En MENSUAL devuelve null si el mes actual no tiene día configurado.
     fun vencimientoDe(item: ItemRecordatorio, ahora: LocalDateTime = LocalDateTime.now()): LocalDateTime? {
         return when (item.grupo) {
-            Grupo.MENSUAL.name ->
-                fechaSegura(ahora.year, ahora.monthValue, item.diaMes).atTime(HORA_ALARMA)
+            Grupo.MENSUAL.name -> {
+                val diaEsteMes = diasPorMesDe(item)[ahora.monthValue - 1]
+                if (diaEsteMes <= 0) null
+                else fechaSegura(ahora.year, ahora.monthValue, diaEsteMes).atTime(horaDe(item))
+            }
             Grupo.ANIVERSARIOS.name, Grupo.ANUAL.name ->
-                fechaSegura(ahora.year, item.mes, item.diaMes).atTime(HORA_ALARMA)
+                fechaSegura(ahora.year, item.mes, item.diaMes).atTime(horaDe(item))
             Grupo.GENERAL.name -> {
                 try {
                     val f = LocalDate.parse(item.fechaGeneral, DateTimeFormatter.ISO_LOCAL_DATE)
-                    val h = try {
-                        LocalTime.parse(item.horaGeneral, DateTimeFormatter.ofPattern("HH:mm"))
-                    } catch (e: Exception) {
-                        HORA_ALARMA
-                    }
-                    f.atTime(h)
+                    f.atTime(horaDe(item))
                 } catch (e: Exception) {
                     null
                 }
@@ -120,15 +155,27 @@ object DatosApp {
         }
     }
 
+    // Siguiente vencimiento MENSUAL: el primer mes (a partir del siguiente)
+    // que tenga día configurado; si se acaba el año, sigue en el siguiente.
+    private fun proximoVencimientoMensual(item: ItemRecordatorio, venc: LocalDateTime): LocalDateTime {
+        val dias = diasPorMesDe(item)
+        var m = venc.monthValue
+        var anio = venc.year
+        repeat(12) {
+            m += 1
+            if (m > 12) { m = 1; anio += 1 }
+            val d = dias[m - 1]
+            if (d > 0) return fechaSegura(anio, m, d).atTime(horaDe(item))
+        }
+        return venc.plusMonths(1)
+    }
+
     fun avanzarCiclo(item: ItemRecordatorio, venc: LocalDateTime): LocalDateTime {
         return when (item.grupo) {
-            Grupo.MENSUAL.name -> {
-                val sig = venc.plusMonths(1)
-                fechaSegura(sig.year, sig.monthValue, item.diaMes).atTime(HORA_ALARMA)
-            }
+            Grupo.MENSUAL.name -> proximoVencimientoMensual(item, venc)
             Grupo.ANIVERSARIOS.name, Grupo.ANUAL.name -> {
                 val sig = venc.plusYears(1)
-                fechaSegura(sig.year, item.mes, item.diaMes).atTime(HORA_ALARMA)
+                fechaSegura(sig.year, item.mes, item.diaMes).atTime(horaDe(item))
             }
             else -> venc
         }
@@ -150,12 +197,30 @@ object DatosApp {
 
     fun descripcionVencimiento(item: ItemRecordatorio): String {
         return when (item.grupo) {
-            Grupo.MENSUAL.name -> "Día ${item.diaMes} de cada mes"
+            Grupo.MENSUAL.name -> {
+                val dias = diasPorMesDe(item)
+                val activos = mutableListOf<String>()
+                for (i in 0..11) {
+                    if (dias[i] > 0) activos.add("${MESES[i].take(3).uppercase()} ${dias[i]}")
+                }
+                when {
+                    activos.isEmpty() -> "Sin días configurados - toca la tarjeta para ponerlos"
+                    dias.all { it == dias[0] } && dias[0] > 0 -> "Día ${dias[0]} de cada mes"
+                    else -> "Cronograma: ${activos.joinToString(" · ")}"
+                }
+            }
             Grupo.ANIVERSARIOS.name ->
                 "Cada año: ${item.diaMes} de ${MESES[(item.mes - 1).coerceIn(0, 11)]}"
             Grupo.ANUAL.name ->
                 "Cada año: ${item.diaMes} de ${MESES[(item.mes - 1).coerceIn(0, 11)]}"
-            Grupo.GENERAL.name -> "${item.fechaGeneral} a las ${item.horaGeneral}"
+            Grupo.GENERAL.name -> {
+                val fechaBonita = try {
+                    LocalDate.parse(item.fechaGeneral).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+                } catch (e: Exception) {
+                    item.fechaGeneral
+                }
+                "$fechaBonita a las ${item.horaGeneral}"
+            }
             else -> ""
         }
     }
@@ -163,7 +228,7 @@ object DatosApp {
     fun textoAviso(item: ItemRecordatorio, venc: LocalDateTime, ahora: LocalDateTime): String {
         val dias = Duration.between(ahora, venc).toDays()
         val cuando = when (item.grupo) {
-            Grupo.MENSUAL.name -> "día ${item.diaMes}"
+            Grupo.MENSUAL.name -> "día ${venc.dayOfMonth}"
             Grupo.GENERAL.name -> venc.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
             else -> "${venc.dayOfMonth} de ${MESES[(venc.monthValue - 1).coerceIn(0, 11)]}"
         }
@@ -203,10 +268,15 @@ object DatosApp {
         return Gson().toJson(raiz)
     }
 
+    private fun claveAniversario(titulo: String, mes: Int, dia: Int): String =
+        titulo.trim().lowercase() + "|" + mes + "|" + dia
+
     // Importador flexible: entiende el respaldo nuevo (items) y el respaldo
-    // antiguo de cumpleaños (array o objeto con varios nombres de campos)
-    fun importarAniversarios(context: Context, texto: String): Int {
+    // antiguo de cumpleaños. NO agrega duplicados (compara nombre + mes + día,
+    // ignorando mayúsculas/minúsculas) y reporta cuántos omitió.
+    fun importarAniversarios(context: Context, texto: String): ResultadoImportacion {
         var agregados = 0
+        var omitidos = 0
         try {
             val raiz: JsonElement = Gson().fromJson(texto, JsonElement::class.java)
             val arr: JsonArray = when {
@@ -230,6 +300,10 @@ object DatosApp {
                 else -> JsonArray()
             }
             val lista = cargar(context)
+            val existentes = lista
+                .filter { it.grupo.equals(Grupo.ANIVERSARIOS.name, ignoreCase = true) }
+                .mapTo(mutableSetOf()) { claveAniversario(it.titulo, it.mes, it.diaMes) }
+            val enArchivo = mutableSetOf<String>()
             for (elemento in arr) {
                 try {
                     if (!elemento.isJsonObject) continue
@@ -248,6 +322,12 @@ object DatosApp {
                         null -> TipoAniversario.CUMPLEANOS.name
                         else -> TipoAniversario.OTRO.name
                     }
+                    val clave = claveAniversario(titulo, par.second, par.first)
+                    if (existentes.contains(clave) || enArchivo.contains(clave)) {
+                        omitidos++
+                        continue
+                    }
+                    enArchivo.add(clave)
                     lista.add(
                         ItemRecordatorio(
                             id = UUID.randomUUID().toString(),
@@ -266,7 +346,7 @@ object DatosApp {
             if (agregados > 0) guardar(context, lista)
         } catch (e: Exception) {
         }
-        return agregados
+        return ResultadoImportacion(agregados, omitidos)
     }
 
     private fun campo(o: JsonObject, vararg claves: String): String? {
