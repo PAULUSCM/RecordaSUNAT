@@ -204,10 +204,10 @@ fun PantallaPrincipal() {
 
     var tab by remember { mutableStateOf(0) }
     var lista by remember { mutableStateOf(listOf<Obligacion>()) }
-    var detalleId by remember { mutableStateOf<Int?>(null) }
+    var detalleId by remember { mutableStateOf<Long?>(null) }
     var editorTipo by remember { mutableStateOf<String?>(null) }
-    var editarId by remember { mutableStateOf<Int?>(null) }
-    var borrarId by remember { mutableStateOf<Int?>(null) }
+    var editarId by remember { mutableStateOf<Long?>(null) }
+    var borrarId by remember { mutableStateOf<Long?>(null) }
     var configTipo by remember { mutableStateOf<String?>(null) }
     var elegirAjustes by remember { mutableStateOf(false) }
     var textoCrash by remember { mutableStateOf<String?>(null) }
@@ -313,7 +313,7 @@ fun PantallaPrincipal() {
         DialogoEditor(
             tipo = tipo,
             inicial = null,
-            nuevoId = (lista.maxOfOrNull { it.id } ?: 0) + 1,
+            nuevoId = (lista.maxOfOrNull { it.id } ?: 0L) + 1L,
             onGuardar = { nuevo ->
                 guardar(lista + nuevo)
                 tab = 0
@@ -327,7 +327,7 @@ fun PantallaPrincipal() {
             DialogoEditor(
                 tipo = obj.tipo,
                 inicial = obj,
-                nuevoId = 0,
+                nuevoId = 0L,
                 onGuardar = { editado ->
                     guardar(lista.map { if (it.id == editado.id) editado else it })
                 },
@@ -396,7 +396,7 @@ fun PantallaPrincipal() {
 }
 
 @Composable
-fun ListaProgramadas(lista: List<Obligacion>, onAbrir: (Int) -> Unit, onIrAgregar: () -> Unit) {
+fun ListaProgramadas(lista: List<Obligacion>, onAbrir: (Long) -> Unit, onIrAgregar: () -> Unit) {
     val hoy = LocalDate.now()
     val sunat = lista.filter { it.tipo != "GENERAL" }.sortedBy { it.nombre.lowercase() }
     val general = lista.filter { it.tipo == "GENERAL" }.sortedBy { it.nombre.lowercase() }
@@ -469,7 +469,7 @@ private fun colorEstado(o: Obligacion, hoy: LocalDate): Color {
 }
 
 @Composable
-fun FilaNombre(o: Obligacion, hoy: LocalDate, onAbrir: (Int) -> Unit) {
+fun FilaNombre(o: Obligacion, hoy: LocalDate, onAbrir: (Long) -> Unit) {
     Surface(
         onClick = { onAbrir(o.id) },
         color = MaterialTheme.colorScheme.surface,
@@ -824,12 +824,12 @@ fun PantallaPrivacidad(onVolver: () -> Unit) {
 fun DialogoEditor(
     tipo: String,
     inicial: Obligacion?,
-    nuevoId: Int,
+    nuevoId: Long,
     onGuardar: (Obligacion) -> Unit,
     onCerrar: () -> Unit
 ) {
     val esSunat = tipo != "GENERAL"
-    val clave = inicial?.id ?: -1
+    val clave = inicial?.id ?: -1L
     var nombre by remember(clave) { mutableStateOf(inicial?.nombre ?: "") }
     var detalle by remember(clave) { mutableStateOf(inicial?.detalle ?: "") }
     var avisoTxt by remember(clave) { mutableStateOf((inicial?.diasAviso ?: 5).toString()) }
