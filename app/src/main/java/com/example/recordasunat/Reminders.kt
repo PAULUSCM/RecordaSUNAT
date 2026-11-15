@@ -19,19 +19,91 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import java.time.Duration
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /* ============================================================
-   MOTOR DE ALARMAS Y NOTIFICACIONES - v4.0
-   - Aviso permanente desde días antes (5 en MENSUAL/ANUAL/GENERAL,
-     7 en ANIVERSARIOS)
-   - Alarma que suena repetidamente (cada 10 min; después de las
-     22:00 pasa a las 08:00 del día siguiente) hasta confirmar
+   MOTOR DE ALARMAS Y NOTIFICACIONES - v4.4
+   - CONFIGURACIÓN DE ALARMA POR PESTAÑA (ConfigAlarmas): una
+     alarma distinta para MENSUAL, ANIVERSARIOS, ANUAL y GENERAL,
+     cada una con: días antes, hora de inicio, hora de fin e
+     intervalo en minutos. Por defecto: 5 días antes (7 en
+     ANIVERSARIOS y 1 en GENERAL), de 08:00 a 20:00, cada 60 min.
+   - La alarma suena SOLO en los días y en el horario configurados:
+     desde N días antes hasta el día del vencimiento, entre la hora
+     de inicio y la de fin, repitiendo cada X minutos hasta confirmar.
+   - Lo ya VENCIDO no suena y no se queda en notificaciones: en la
+     zona de notificaciones solo aparecen recordatorios vigentes.
    - Botón de confirmación dinámico: YA DECLARÉ / YA PAGUÉ / YA LO HICE
    ============================================================ */
+
+/* -------- configuración de alarma por pestaña (4 tipos) -------- */
+
+data class ConfigAlarma(
+    val diasAntes: Int,
+    val horaInicio: String,
+    val horaFin: String,
+    val intervaloMin: Int
+)
+
+object ConfigAlarmas {
+
+    private const val PREFS = "config_alarmas_inges"
+
+    fun porDefecto(grupo: String): ConfigAlarma = when (grupo.uppercase()) {
+        Grupo.ANIVERSARIOS.name -> ConfigAlarma(7, "08:00", "20:00", 60)
+        Grupo.GENERAL.name -> ConfigAlarma(1, "08:00", "20:00", 30)
+        else -> ConfigAlarma(5, "08:00", "20:00", 60)
+    }
+
+    fun leer(context: Context, grupo: String): ConfigAlarma {
+        val d = porDefecto(grupo)
+        return try {
+            val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ConfigAlarma(
+                p.getInt("dias_" + grupo, d.diasAntes),
+                p.getString("inicio_" + grupo, d.horaInicio) ?: d.horaInicio,
+                p.getString("fin_" + grupo, d.horaFin) ?: d.horaFin,
+                p.getInt("intervalo_" + grupo, d.intervaloMin)
+            )
+        } catch (e: Exception) {
+            d
+        }
+    }
+
+    fun guardar(context: Context, grupo: String, c: ConfigAlarma) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putInt("dias_" + grupo, c.diasAntes)
+                .putString("inicio_" + grupo, c.horaInicio)
+                .putString("fin_" + grupo, c.horaFin)
+                .putInt("intervalo_" + grupo, c.intervaloMin)
+                .apply()
+        } catch (e: Exception) {
+        }
+    }
+
+    // Acepta "08:00", "8:00" o "8" (minuto 0). Devuelve null si es inválida.
+    fun parseHora(texto: String): LocalTime? {
+        return try {
+            val p = texto.trim().split(":")
+            val h = p.getOrNull(0)?.trim()?.toIntOrNull() ?: return null
+            val m = p.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+            LocalTime.of(h, m)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun textoResumen(c: ConfigAlarma): String {
+        val dias = if (c.diasAntes == 1) "1 día" else "${c.diasAntes} días"
+        return "suena $dias antes, de ${c.horaInicio} a ${c.horaFin}, cada ${c.intervaloMin} min"
+    }
+}
 
 object MotorAlarmas {
 
@@ -49,7 +121,7 @@ object MotorAlarmas {
                 CANAL_AVISO, "Avisos de vencimiento",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Aviso fijo mientras se acerca un vencimiento"
+                description = "Aviso fijo mientras el recordatorio está vigente"
             }
             val uriAlarma: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             val atributos = AudioAttributes.Builder()
@@ -60,7 +132,7 @@ object MotorAlarmas {
                 CANAL_ALARMA, "Alarma de vencimiento",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Suena repetidamente hasta que confirmas"
+                description = "Suena solo dentro del horario configurado, hasta que confirmas"
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 600, 300, 600, 300, 600)
                 setSound(uriAlarma, atributos)
@@ -194,62 +266,98 @@ object MotorAlarmas {
 
     fun programar(context: Context, item: ItemRecordatorio) {
         val ahora = LocalDateTime.now()
-        val venc = DatosApp.vencimientoDe(item, ahora) ?: return
 
-        if (item.grupo == Grupo.GENERAL.name) {
-            if (DatosApp.yaConfirmado(item, venc)) {
-                limpiarNotificacion(context, item.id)
-                cancelarAlarma(context, item.id)
-                return
-            }
-            if (venc.isAfter(ahora)) {
-                val dias = Duration.between(ahora, venc).toDays()
-                if (dias < DatosApp.diasAviso(item)) {
-                    notificacionPermanente(
-                        context, item, "AVISO: ${item.titulo}",
-                        DatosApp.textoAviso(item, venc, ahora)
-                    )
-                }
-                fijarAlarma(context, item, venc)
-            } else {
-                notificacionPermanente(
-                    context, item, "VENCIDO: ${item.titulo}",
-                    DatosApp.descripcionVencimiento(item)
-                )
-                fijarAlarma(context, item, ahora.plusMinutes(1))
-            }
+        if (!item.activo) {
+            limpiarNotificacion(context, item.id)
+            cancelarAlarma(context, item.id)
             return
         }
 
-        // MENSUAL, ANIVERSARIOS, ANUAL
-        if (DatosApp.yaConfirmado(item, venc)) {
-            val proximo = DatosApp.avanzarCiclo(item, venc)
-            fijarAlarma(context, item, proximo)
+        val venc = DatosApp.vencimientoDe(item, ahora)
+        if (venc == null) {
+            // Sin fecha utilizable (GENERAL sin fecha, mes sin día configurado):
+            // se apaga el aviso y no se toca ninguna alarma ya programada.
             limpiarNotificacion(context, item.id)
             return
         }
-        if (venc.isAfter(ahora)) {
-            val dias = Duration.between(ahora, venc).toDays()
-            if (dias < DatosApp.diasAviso(item)) {
-                notificacionPermanente(
-                    context, item, "AVISO: ${item.titulo}",
-                    DatosApp.textoAviso(item, venc, ahora)
-                )
+
+        val cfg = ConfigAlarmas.leer(context, item.grupo)
+        val inicio = ConfigAlarmas.parseHora(cfg.horaInicio) ?: LocalTime.of(8, 0)
+        val fin = ConfigAlarmas.parseHora(cfg.horaFin) ?: LocalTime.of(20, 0)
+        val intervalo = cfg.intervaloMin.coerceAtLeast(1).toLong()
+
+        if (DatosApp.yaConfirmado(item, venc)) {
+            limpiarNotificacion(context, item.id)
+            if (item.grupo == Grupo.GENERAL.name) {
+                cancelarAlarma(context, item.id)
+                return
             }
-            fijarAlarma(context, item, venc)
-        } else {
-            notificacionPermanente(
-                context, item, "VENCIDO: ${item.titulo}",
-                DatosApp.descripcionVencimiento(item)
-            )
-            fijarAlarma(context, item, ahora.plusMinutes(1))
+            // Ciclo confirmado: se programa ya el primer timbre del SIGUIENTE ciclo.
+            val proximo = DatosApp.avanzarCiclo(item, venc)
+            val diaProx = proximo.toLocalDate()
+            val primerDiaProx = diaProx.minusDays(cfg.diasAntes.coerceAtLeast(0).toLong())
+            val siguiente = proximoTimbre(ahora, primerDiaProx, diaProx, inicio, fin, intervalo)
+            fijarAlarma(context, item, siguiente ?: proximo)
+            return
         }
+
+        val diaVenc = venc.toLocalDate()
+        val primerDia = diaVenc.minusDays(cfg.diasAntes.coerceAtLeast(0).toLong())
+        val hoy = ahora.toLocalDate()
+        val enVentana = !hoy.isBefore(primerDia) && !hoy.isAfter(diaVenc)
+
+        // En la zona de notificaciones SOLO aparecen los vigentes (dentro de
+        // los días de aviso). Lo vencido se limpia y no suena.
+        if (enVentana) {
+            notificacionPermanente(
+                context, item, "AVISO: ${item.titulo}",
+                DatosApp.textoAviso(item, venc, ahora)
+            )
+        } else {
+            limpiarNotificacion(context, item.id)
+        }
+
+        // Solo suena dentro de la ventana configurada (días y horario).
+        val siguiente = proximoTimbre(ahora, primerDia, diaVenc, inicio, fin, intervalo)
+        if (siguiente != null) {
+            fijarAlarma(context, item, siguiente)
+        } else {
+            cancelarAlarma(context, item.id)
+        }
+    }
+
+    // Primer momento >= ahora en que la alarma debe sonar: cada día entre
+    // primerDia y ultimoDia (inclusive), entre la hora de inicio y la de fin,
+    // alineado a los múltiplos del intervalo contados desde la hora de inicio.
+    // Si ya se pasó todo (vencido o ventana terminada) devuelve null: no suena más.
+    fun proximoTimbre(
+        ahora: LocalDateTime,
+        primerDia: LocalDate,
+        ultimoDia: LocalDate,
+        inicio: LocalTime,
+        fin: LocalTime,
+        intervaloMin: Long
+    ): LocalDateTime? {
+        var dia = if (ahora.toLocalDate().isBefore(primerDia)) primerDia else ahora.toLocalDate()
+        while (!dia.isAfter(ultimoDia)) {
+            val base = dia.atTime(inicio)
+            var candidato = base
+            if (dia == ahora.toLocalDate() && ahora.isAfter(base)) {
+                val minutos = Duration.between(base, ahora).toMinutes()
+                candidato = base.plusMinutes((minutos / intervaloMin + 1) * intervaloMin)
+            }
+            while (!candidato.toLocalTime().isAfter(fin)) {
+                if (candidato.isAfter(ahora)) return candidato
+                candidato = candidato.plusMinutes(intervaloMin)
+            }
+            dia = dia.plusDays(1)
+        }
+        return null
     }
 
     fun programarTodo(context: Context) {
         val lista = DatosApp.cargar(context)
         for (item in lista) {
-            if (!item.activo) continue
             try {
                 programar(context, item)
             } catch (e: Exception) {
@@ -311,17 +419,35 @@ class ReceptorAlarma : BroadcastReceiver() {
                 MotorAlarmas.limpiarNotificacion(context, id)
                 return
             }
+
+            // Título correcto según el momento (ahora también suena días antes).
+            val titulo = when {
+                venc.toLocalDate() == ahora.toLocalDate() -> "VENCE HOY"
+                venc.isAfter(ahora) -> "VENCE PRONTO"
+                else -> "VENCIDO"
+            }
             MotorAlarmas.notificacionAlarma(
                 context, item,
-                "${DatosApp.textoAlarma(item, venc, ahora)}: ${item.titulo}",
+                "$titulo: ${item.titulo}",
                 DatosApp.descripcionVencimiento(item)
             )
-            // Repetición: cada 10 minutos; tras las 22:00 pasa a las 08:00 del día siguiente
-            var proxima = ahora.plusMinutes(10)
-            if (proxima.hour >= 22) {
-                proxima = proxima.plusDays(1).with(LocalTime.of(8, 0))
+
+            // Siguiente timbre DENTRO de la ventana configurada; si ya se pasó
+            // todo (se acabó el día del vencimiento), no vuelve a sonar.
+            val cfg = ConfigAlarmas.leer(context, item.grupo)
+            val inicio = ConfigAlarmas.parseHora(cfg.horaInicio) ?: LocalTime.of(8, 0)
+            val fin = ConfigAlarmas.parseHora(cfg.horaFin) ?: LocalTime.of(20, 0)
+            val diaVenc = venc.toLocalDate()
+            val primerDia = diaVenc.minusDays(cfg.diasAntes.coerceAtLeast(0).toLong())
+            val siguiente = MotorAlarmas.proximoTimbre(
+                ahora, primerDia, diaVenc, inicio, fin,
+                cfg.intervaloMin.coerceAtLeast(1).toLong()
+            )
+            if (siguiente != null) {
+                MotorAlarmas.fijarAlarma(context, item, siguiente)
+            } else {
+                MotorAlarmas.cancelarAlarma(context, item.id)
             }
-            MotorAlarmas.fijarAlarma(context, item, proxima)
         } catch (e: Exception) {
         }
     }
