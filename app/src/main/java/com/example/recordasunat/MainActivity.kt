@@ -65,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -72,20 +73,28 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /* ============================================================
-   INGES BUILDERS RECORDATORIOS PRO - v4.2
+   INGES BUILDERS RECORDATORIOS PRO - v4.3
    6 pestañas: MENSUAL / ANIVERSARIOS / ANUAL / GENERAL / AYUDA / VERSION
-   - AGREGAR pide solo el nombre; el detalle se llena tocando la tarjeta.
-   - MENSUAL: cronograma editable por mes (estilo SUNAT).
-   - ANIVERSARIOS y ANUAL: check de repetición anual.
-   - VERSION: anuncio, ficha y contacto de INGES BUILDERS SCRL.
+   - AGREGAR abre el formulario COMPLETO: se configura todo de una vez
+     (etiqueta/tipo, cronograma, monto, hora de la alarma y nota).
+   - La ventana de agregar/editar ES DESPLAZABLE de arriba a abajo:
+     se ven la grilla 3x4, el monto, la hora y el check de repetición.
+   - MENSUAL: cronograma en grilla de 3 filas x 4 columnas (ENE-DIC).
+   - Editar: tocando el nombre de la tarjeta en la lista.
+   - GENERAL: la fecha se muestra y guarda en formato 15/03/2026.
+   - VERSION: anuncio, ficha, contacto, POLÍTICA DE PRIVACIDAD y
+     condiciones de uso de INGES BUILDERS SCRL.
    ============================================================ */
 
 class MainActivity : ComponentActivity() {
@@ -331,7 +340,7 @@ fun PantallaPrincipal() {
                 MotorAlarmas.programar(context, nuevo)
                 recargar()
                 dialogoGrupo = null
-                Toast.makeText(context, "Creado. Toca la tarjeta para completar los detalles", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Guardado. Toca el nombre de la tarjeta si quieres modificar algo", Toast.LENGTH_LONG).show()
             },
             onCerrar = { dialogoGrupo = null }
         )
@@ -390,10 +399,10 @@ fun textoAgregar(indice: Int): String = when (indice) {
 }
 
 fun textoVacio(indice: Int): String = when (indice) {
-    0 -> "Aún no hay recordatorios MENSUALES. Toca AGREGAR MENSUAL, pon el nombre (ej: Declarar IGV) y luego toca la tarjeta para poner su cronograma del año."
-    1 -> "Aún no hay ANIVERSARIOS. Toca AGREGAR ANIVERSARIO, pon el nombre (ej: Cumpleaños de mamá) y luego toca la tarjeta para poner su fecha."
-    2 -> "Aún no hay recordatorios ANUALES. Toca AGREGAR ANUAL, pon el nombre y luego toca la tarjeta para poner su mes y día."
-    else -> "Aún no hay recordatorios de fecha puntual. Toca AGREGAR GENERAL, pon el nombre y luego toca la tarjeta para poner fecha y hora."
+    0 -> "Aún no hay recordatorios MENSUALES. Toca AGREGAR MENSUAL y llena el formulario completo: nombre, etiqueta, cronograma del año, monto y hora de la alarma."
+    1 -> "Aún no hay ANIVERSARIOS. Toca AGREGAR ANIVERSARIO y llena el formulario completo: nombre, tipo, día, mes y hora."
+    2 -> "Aún no hay recordatorios ANUALES. Toca AGREGAR ANUAL y llena el formulario completo: nombre, día, mes y hora."
+    else -> "Aún no hay recordatorios de fecha puntual. Toca AGREGAR GENERAL y llena el formulario completo: nombre, fecha, hora y nota."
 }
 
 @Composable
@@ -421,7 +430,7 @@ fun PantallaVersion() {
         ) {
             Text("INGES BUILDERS", color = Color(0xFFFFB300), fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Text("RECORDATORIOS PRO", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text("Versión 4.2 - 2026", color = Color(0xFF9AA0B0), fontSize = 13.sp)
+            Text("Versión 4.3 - 2026", color = Color(0xFF9AA0B0), fontSize = 13.sp)
         }
 
         TarjetaAyuda("ANUNCIO DE INGES BUILDERS", listOf(
@@ -474,13 +483,22 @@ fun PantallaVersion() {
 
         Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1F26)), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                LineaVersion("Version", "4.2 - 2026")
+                LineaVersion("Version", "4.3 - 2026")
                 LineaVersion("Autor", "Hugo Cerquin M")
                 LineaVersion("Empresa", "INGES BUILDERS SCRL.")
                 LineaVersion("Ciudad", "CAJAMARCA, PERU")
                 LineaVersion("App", "INGES BUILDERS RECORDATORIOS PRO")
             }
         }
+
+        TarjetaAyuda("POLÍTICA DE PRIVACIDAD", listOf(
+            "1. Almacenamiento Estricto en el Dispositivo: Esta aplicación opera bajo un modelo de almacenamiento estrictamente local. Todos los recordatorios, fechas de cumpleaños, nombres, notas y configuraciones ingresados por el usuario se guardan únicamente en la memoria interna de su dispositivo. El desarrollador no recopila, transmite, almacena en servidores externos ni comparte ningún dato personal o información ingresada en la aplicación.",
+            "2. Ausencia de Rastreo y Servicios de Terceros: Esta aplicación no utiliza cookies, identificadores de publicidad, herramientas de analítica ni servicios de rastreo de terceros. Su actividad dentro de la aplicación es completamente privada y no se monitorea ni se perfila con fines comerciales o estadísticos. Al utilizar la aplicación, usted acepta estas condiciones de uso local.",
+            "3. Permisos del Sistema: La aplicación solicita únicamente permisos de notificaciones y alarmas del sistema con el exclusivo propósito de alertar al usuario sobre los eventos y recordatorios programados localmente. No se accede a la cámara, micrófono, ubicación ni a otros archivos personales del teléfono sin su acción directa.",
+            "4. Seguridad y Eliminación de Datos: Al almacenarse los datos exclusivamente en el dispositivo del usuario, este mantiene el control total y la seguridad sobre ellos mediante los mecanismos de protección propios de su teléfono. Puede editar o eliminar cualquier recordatorio directamente desde la aplicación, o borrar toda la información de forma permanente desinstalando la aplicación o borrando los datos de almacenamiento desde los ajustes de su dispositivo.",
+            "5. Exención de Responsabilidad por Pérdida de Datos: Dado que toda la información se almacena exclusivamente de forma local en su dispositivo y no existe sincronización ni respaldo en servidores externos del desarrollador, el usuario es el único responsable de conservar sus datos. En caso de pérdida, robo, daño del dispositivo, restablecimiento de fábrica o desinstalación de la aplicación sin haber realizado una copia de seguridad previa (si dicha función estuviera disponible), los recordatorios y fechas almacenadas se perderán de forma permanente y no podrán ser recuperados por el desarrollador.",
+            "6. Promoción de Servicios Propios: Esta aplicación puede mostrar espacios informativos o promocionales sobre servicios de ingeniería, construcción y estructuras metálicas ofrecidas por el desarrollador. Estos enlaces son estáticos, no utilizan cookies de rastreo publicitario y solo redirigen a canales externos de contacto si el usuario decide pulsarlos voluntariamente."
+        ))
 
         TarjetaAyuda("CONDICIONES DE USO", listOf(
             "1) Esta app es una herramienta de apoyo personal: te recuerda a tiempo, pero atender cada obligación es tu responsabilidad.",
@@ -714,8 +732,18 @@ fun DialogoFormulario(
     var etiquetaSel by remember { mutableStateOf((item?.etiqueta ?: EtiquetaMensual.OTROS.name).uppercase()) }
     var tipoSel by remember { mutableStateOf((item?.tipoAniversario ?: TipoAniversario.CUMPLEANOS.name).uppercase().replace("Ñ", "N")) }
     var diaTexto by remember { mutableStateOf(item?.diaMes?.toString() ?: "15") }
-    var mesIndice by remember { mutableStateOf(((item?.mes ?: 1) - 1).coerceIn(0, 11)) }
-    var fechaTexto by remember { mutableStateOf(item?.fechaGeneral ?: "") }
+    var mesIndice by remember { mutableStateOf(((item?.mes ?: LocalDate.now().monthValue) - 1).coerceIn(0, 11)) }
+    var fechaTexto by remember {
+        mutableStateOf(
+            item?.fechaGeneral?.takeIf { it.isNotEmpty() }?.let { iso ->
+                try {
+                    LocalDate.parse(iso).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+                } catch (e: Exception) {
+                    iso
+                }
+            } ?: ""
+        )
+    }
     var horaTexto by remember { mutableStateOf(item?.horaGeneral ?: "08:00") }
     var montoTexto by remember { mutableStateOf(textoDeMonto(item)) }
     var notaTexto by remember { mutableStateOf(item?.nota ?: "") }
@@ -729,30 +757,47 @@ fun DialogoFormulario(
         )
     }
 
-    AlertDialog(
+    val altoMaximo = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
+
+    Dialog(
         onDismissRequest = onCerrar,
-        containerColor = Color(0xFF1C1F26),
-        titleContentColor = Color.White,
-        textContentColor = Color(0xFFDDDFE5),
-        title = { Text(if (esEdicion) "EDITAR ${grupoNombre.uppercase()}" else "AGREGAR ${grupoNombre.uppercase()}", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
-            Column(
-                Modifier.verticalScroll(rememberScrollState()).heightIn(max = 400.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (mensajeError.isNotEmpty()) {
-                    Text(mensajeError, color = Color(0xFFEF5350), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .widthIn(max = 560.dp)
+                .heightIn(max = altoMaximo),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1C1F26))
+        ) {
+            Column {
+                Text(
+                    if (esEdicion) "EDITAR ${grupoNombre.uppercase()}" else "AGREGAR ${grupoNombre.uppercase()}",
+                    color = Color(0xFF14161B),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFFFB300))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                )
 
-                CampoTexto(titulo, { titulo = it }, "Nombre del recordatorio", apoyo = "Ej: IGV - PDT 621")
+                // Contenido DESPLAZABLE: se ve todo, de la grilla hasta la nota.
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (mensajeError.isNotEmpty()) {
+                        Text(mensajeError, color = Color(0xFFEF5350), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
 
-                if (!esEdicion) {
-                    Text(
-                        "Solo escribe el nombre. Después tocas la tarjeta en la lista para completar los detalles: cronograma, etiqueta, monto, hora y nota.",
-                        color = Color(0xFF9AA0B0),
-                        fontSize = 12.sp
-                    )
-                } else {
+                    CampoTexto(titulo, { titulo = it }, "Nombre del recordatorio", apoyo = "Ej: IGV - PDT 621")
+
                     if (esMensual) {
                         Text("Etiqueta:", color = Color(0xFF9AA0B0), fontSize = 12.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -854,100 +899,114 @@ fun DialogoFormulario(
 
                     CampoTexto(notaTexto, { notaTexto = it }, "Nota (opcional)", apoyo = "Ej: usar clave del banco")
                 }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val tituloLimpio = titulo.trim()
-                    val horaValida: LocalTime? = try {
-                        if (horaTexto.trim().isEmpty()) {
-                            LocalTime.of(8, 0)
-                        } else {
-                            val hp = horaTexto.trim().split(":")
-                            LocalTime.of(
-                                hp[0].trim().toIntOrNull() ?: -1,
-                                (hp.getOrNull(1) ?: "0").trim().toIntOrNull() ?: -1
-                            )
-                        }
-                    } catch (e: Exception) { null }
 
-                    val diasGridNum = diasGrid.map { (it.toIntOrNull() ?: 0).coerceIn(0, 31) }
-
-                    var fechaISO = ""
-                    var fechaOk = true
-                    if (esGeneral && esEdicion) {
-                        val p = fechaTexto.trim().split("/")
-                        if (p.size == 3) {
-                            var anio = p[2].trim().toIntOrNull() ?: -1
-                            if (anio in 0..99) anio += 2000
-                            val f = try {
-                                LocalDate.of(anio, p[1].trim().toIntOrNull() ?: -1, p[0].trim().toIntOrNull() ?: -1)
+                // Botones siempre visibles abajo, sin importar cuánto se desplace.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1C1F26))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onCerrar) { Text("CANCELAR", color = Color(0xFF9AA0B0)) }
+                    Button(
+                        onClick = {
+                            val tituloLimpio = titulo.trim()
+                            val horaValida: LocalTime? = try {
+                                if (horaTexto.trim().isEmpty()) {
+                                    LocalTime.of(8, 0)
+                                } else {
+                                    val hp = horaTexto.trim().split(":")
+                                    LocalTime.of(
+                                        hp[0].trim().toIntOrNull() ?: -1,
+                                        (hp.getOrNull(1) ?: "0").trim().toIntOrNull() ?: -1
+                                    )
+                                }
                             } catch (e: Exception) { null }
-                            if (f == null) fechaOk = false else fechaISO = f.toString()
-                        } else fechaOk = false
-                    }
 
-                    val dia = diaTexto.trim().toIntOrNull()
+                            val diasGridNum = diasGrid.map { (it.toIntOrNull() ?: 0).coerceIn(0, 31) }
 
-                    when {
-                        tituloLimpio.isEmpty() ->
-                            mensajeError = "Escribe un nombre para el recordatorio."
-                        !esEdicion -> {
-                            val mesActual = LocalDate.now().monthValue
-                            onGuardar(
-                                ItemRecordatorio(
-                                    id = System.currentTimeMillis().toString(),
-                                    grupo = grupoNombre,
-                                    titulo = tituloLimpio,
-                                    etiqueta = EtiquetaMensual.OTROS.name,
-                                    diaMes = if (esGeneral) 1 else 15,
-                                    mes = if (esGeneral) 1 else mesActual,
-                                    fechaGeneral = "",
-                                    horaGeneral = "08:00",
-                                    tipoAniversario = if (esAniversarios) TipoAniversario.CUMPLEANOS.name else TipoAniversario.OTRO.name,
-                                    monto = 0.0,
-                                    nota = "",
-                                    activo = true,
-                                    cicloConfirmado = ""
-                                )
-                            )
-                        }
-                        horaValida == null ->
-                            mensajeError = "Escribe la hora como 09:30."
-                        esGeneral && !fechaOk ->
-                            mensajeError = "Escribe la fecha como 15/03/2026."
-                        esMensual && diasGridNum.none { it > 0 } ->
-                            mensajeError = "Pon al menos un día (1 a 31) en algún mes del cronograma."
-                        !esGeneral && !esMensual && (dia == null || dia < 1 || dia > 31) ->
-                            mensajeError = "El día debe ser un número de 1 a 31."
-                        else -> {
-                            val base = item!!
-                            val actualizado = base.copy(
-                                titulo = tituloLimpio,
-                                etiqueta = if (esMensual) etiquetaSel else base.etiqueta,
-                                diaMes = when {
-                                    esMensual -> diasGridNum.first { it > 0 }
-                                    esGeneral -> 1
-                                    else -> dia!!
-                                },
-                                mes = if (esGeneral) 1 else if (esMensual) base.mes else mesIndice + 1,
-                                diasMes = if (esMensual) diasGridNum.joinToString(",") else base.diasMes,
-                                fechaGeneral = if (esGeneral) fechaISO else base.fechaGeneral,
-                                horaGeneral = horaValida!!.toString(),
-                                tipoAniversario = if (esAniversarios) tipoSel else base.tipoAniversario,
-                                monto = if (esMensual) (montoTexto.trim().replace(",", ".").toDoubleOrNull() ?: 0.0) else base.monto,
-                                nota = notaTexto.trim(),
-                                activo = if (esAnual || esAniversarios) repiteAnual else base.activo,
-                                cicloConfirmado = ""
-                            )
-                            onGuardar(actualizado)
-                        }
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300), contentColor = Color(0xFF14161B))
-            ) { Text(if (esEdicion) "GUARDAR CAMBIOS" else "GUARDAR", fontWeight = FontWeight.Bold) }
-        },
-        dismissButton = { TextButton(onClick = onCerrar) { Text("CANCELAR", color = Color(0xFF9AA0B0)) } }
-    )
+                            var fechaISO = ""
+                            var fechaOk = true
+                            if (esGeneral) {
+                                val p = fechaTexto.trim().split("/")
+                                if (p.size == 3) {
+                                    var anio = p[2].trim().toIntOrNull() ?: -1
+                                    if (anio in 0..99) anio += 2000
+                                    val f = try {
+                                        LocalDate.of(anio, p[1].trim().toIntOrNull() ?: -1, p[0].trim().toIntOrNull() ?: -1)
+                                    } catch (e: Exception) { null }
+                                    if (f == null) fechaOk = false else fechaISO = f.toString()
+                                } else fechaOk = false
+                            }
+
+                            val dia = diaTexto.trim().toIntOrNull()
+
+                            when {
+                                tituloLimpio.isEmpty() ->
+                                    mensajeError = "Escribe un nombre para el recordatorio."
+                                horaValida == null ->
+                                    mensajeError = "Escribe la hora como 09:30."
+                                esGeneral && !fechaOk ->
+                                    mensajeError = "Escribe la fecha como 15/03/2026."
+                                esMensual && diasGridNum.none { it > 0 } ->
+                                    mensajeError = "Pon al menos un día (1 a 31) en algún mes del cronograma."
+                                !esGeneral && !esMensual && (dia == null || dia < 1 || dia > 31) ->
+                                    mensajeError = "El día debe ser un número de 1 a 31."
+                                else -> {
+                                    if (esEdicion) {
+                                        val base = item!!
+                                        val actualizado = base.copy(
+                                            titulo = tituloLimpio,
+                                            etiqueta = if (esMensual) etiquetaSel else base.etiqueta,
+                                            diaMes = when {
+                                                esMensual -> diasGridNum.first { it > 0 }
+                                                esGeneral -> 1
+                                                else -> dia!!
+                                            },
+                                            mes = if (esGeneral) 1 else if (esMensual) base.mes else mesIndice + 1,
+                                            diasMes = if (esMensual) diasGridNum.joinToString(",") else base.diasMes,
+                                            fechaGeneral = if (esGeneral) fechaISO else base.fechaGeneral,
+                                            horaGeneral = horaValida!!.toString(),
+                                            tipoAniversario = if (esAniversarios) tipoSel else base.tipoAniversario,
+                                            monto = if (esMensual) (montoTexto.trim().replace(",", ".").toDoubleOrNull() ?: 0.0) else base.monto,
+                                            nota = notaTexto.trim(),
+                                            activo = if (esAnual || esAniversarios) repiteAnual else base.activo,
+                                            cicloConfirmado = ""
+                                        )
+                                        onGuardar(actualizado)
+                                    } else {
+                                        val mesActual = LocalDate.now().monthValue
+                                        onGuardar(
+                                            ItemRecordatorio(
+                                                id = System.currentTimeMillis().toString(),
+                                                grupo = grupoNombre,
+                                                titulo = tituloLimpio,
+                                                etiqueta = if (esMensual) etiquetaSel else EtiquetaMensual.OTROS.name,
+                                                diaMes = when {
+                                                    esMensual -> diasGridNum.first { it > 0 }
+                                                    esGeneral -> 1
+                                                    else -> dia!!
+                                                },
+                                                mes = if (esGeneral) 1 else if (esMensual) mesActual else mesIndice + 1,
+                                                diasMes = if (esMensual) diasGridNum.joinToString(",") else "",
+                                                fechaGeneral = if (esGeneral) fechaISO else "",
+                                                horaGeneral = horaValida!!.toString(),
+                                                tipoAniversario = if (esAniversarios) tipoSel else TipoAniversario.OTRO.name,
+                                                monto = if (esMensual) (montoTexto.trim().replace(",", ".").toDoubleOrNull() ?: 0.0) else 0.0,
+                                                nota = notaTexto.trim(),
+                                                activo = if (esAnual || esAniversarios) repiteAnual else true,
+                                                cicloConfirmado = ""
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFB300), contentColor = Color(0xFF14161B))
+                    ) { Text(if (esEdicion) "GUARDAR CAMBIOS" else "GUARDAR", fontWeight = FontWeight.Bold) }
+                }
+            }
+        }
+    }
 }
